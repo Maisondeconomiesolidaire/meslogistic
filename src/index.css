@@ -17,17 +17,17 @@
 @custom-variant dark (&:where(.dark, .dark *));
 
 @theme {
-  /* Couleur primaire de l'application : orange #ff7700. */
-  --color-brand-50: #fff4eb;
-  --color-brand-100: #ffe4cc;
-  --color-brand-200: #ffc699;
-  --color-brand-300: #ffa766;
-  --color-brand-400: #ff8d33;
-  --color-brand-500: #ff7700;
-  --color-brand-600: #e66b00;
-  --color-brand-700: #b85400;
-  --color-brand-800: #8a3f00;
-  --color-brand-900: #5c2a00;
+  /* Couleur primaire de l'application : bleu #2563eb. */
+  --color-brand-50: #eff6ff;
+  --color-brand-100: #dbeafe;
+  --color-brand-200: #bfdbfe;
+  --color-brand-300: #93c5fd;
+  --color-brand-400: #60a5fa;
+  --color-brand-500: #2563eb;
+  --color-brand-600: #1d4ed8;
+  --color-brand-700: #1e40af;
+  --color-brand-800: #1e3a8a;
+  --color-brand-900: #172554;
 
   /* Couleurs par type de demande (cf. charte Cycle en Bray) */
   --color-cycle: #196b24; /* Atelier vélo « Cycle en Bray » */
@@ -72,7 +72,7 @@ body {
   --popover: var(--crm-surface);
   --popover-foreground: #faf7f2;
   --primary: var(--color-brand-500);
-  --primary-foreground: #fff8ef;
+  --primary-foreground: #ffffff;
   --secondary: var(--crm-surface-2);
   --secondary-foreground: #f4f4f5;
   --muted: var(--crm-surface-2);
@@ -82,20 +82,20 @@ body {
   --destructive: #ef4444;
   --border: rgba(255, 255, 255, 0.1);
   --input: rgba(255, 255, 255, 0.14);
-  --ring: rgba(255, 119, 0, 0.35);
-  --chart-1: #ffb66b;
-  --chart-2: #ff9b3d;
-  --chart-3: #ff7700;
-  --chart-4: #db6200;
-  --chart-5: #b85400;
+  --ring: rgba(37, 99, 235, 0.35);
+  --chart-1: #93c5fd;
+  --chart-2: #60a5fa;
+  --chart-3: #2563eb;
+  --chart-4: #1d4ed8;
+  --chart-5: #1e40af;
   --sidebar: var(--crm-surface);
   --sidebar-foreground: #faf7f2;
   --sidebar-primary: var(--color-brand-500);
-  --sidebar-primary-foreground: #fff8ef;
+  --sidebar-primary-foreground: #ffffff;
   --sidebar-accent: var(--crm-surface-2);
   --sidebar-accent-foreground: #faf7f2;
   --sidebar-border: rgba(255, 255, 255, 0.1);
-  --sidebar-ring: rgba(255, 119, 0, 0.35);
+  --sidebar-ring: rgba(37, 99, 235, 0.35);
   font-family: "Inter Variable", "Geist", ui-sans-serif, system-ui, -apple-system,
     "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
 }
@@ -117,7 +117,7 @@ body {
   --popover: #ffffff;
   --popover-foreground: #18181b;
   --primary: var(--color-brand-500);
-  --primary-foreground: #fff8ef;
+  --primary-foreground: #ffffff;
   --secondary: #f6f6f7;
   --secondary-foreground: #18181b;
   --muted: #f6f6f7;
@@ -127,13 +127,13 @@ body {
   --destructive: #dc2626;
   --border: rgba(0, 0, 0, 0.10);
   --input: rgba(0, 0, 0, 0.05);
-  --ring: rgba(255, 119, 0, 0.3);
+  --ring: rgba(37, 99, 235, 0.3);
   --sidebar: #ffffff;
   --sidebar-foreground: #18181b;
   --sidebar-accent: #f6f6f7;
   --sidebar-accent-foreground: #18181b;
   --sidebar-border: rgba(0, 0, 0, 0.1);
-  --sidebar-ring: rgba(255, 119, 0, 0.3);
+  --sidebar-ring: rgba(37, 99, 235, 0.3);
   font-family: "Inter Variable", "Geist", ui-sans-serif, system-ui, -apple-system,
     "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   color-scheme: light;
@@ -358,8 +358,8 @@ body {
   --card-foreground: oklch(0.145 0 0);
   --popover: oklch(1 0 0);
   --popover-foreground: oklch(0.145 0 0);
-  --primary: oklch(0.553 0.195 38.402);
-  --primary-foreground: oklch(0.98 0.016 73.684);
+  --primary: #1d4ed8;
+  --primary-foreground: #ffffff;
   --secondary: oklch(0.967 0.001 286.375);
   --secondary-foreground: oklch(0.21 0.006 285.885);
   --muted: oklch(0.97 0 0);
@@ -370,16 +370,16 @@ body {
   --border: oklch(0.922 0 0);
   --input: oklch(0.922 0 0);
   --ring: oklch(0.708 0 0);
-  --chart-1: oklch(0.837 0.128 66.29);
-  --chart-2: oklch(0.705 0.213 47.604);
-  --chart-3: oklch(0.646 0.222 41.116);
-  --chart-4: oklch(0.553 0.195 38.402);
-  --chart-5: oklch(0.47 0.157 37.304);
+  --chart-1: #93c5fd;
+  --chart-2: #60a5fa;
+  --chart-3: #2563eb;
+  --chart-4: #1d4ed8;
+  --chart-5: #1e40af;
   --radius: 0.625rem;
   --sidebar: oklch(0.985 0 0);
   --sidebar-foreground: oklch(0.145 0 0);
-  --sidebar-primary: oklch(0.646 0.222 41.116);
-  --sidebar-primary-foreground: oklch(0.98 0.016 73.684);
+  --sidebar-primary: #2563eb;
+  --sidebar-primary-foreground: #ffffff;
   --sidebar-accent: oklch(0.97 0 0);
   --sidebar-accent-foreground: oklch(0.205 0 0);
   --sidebar-border: oklch(0.922 0 0);

@@ -49,7 +49,7 @@ if (missing.length > 0) {
         <ClerkProvider
           publishableKey={clerkKey}
           localization={frFR}
-          appearance={{ variables: { colorPrimary: "#ff7700" } }}
+          appearance={{ variables: { colorPrimary: "#2563eb" } }}
           signInUrl="/connexion"
           signUpUrl="/inscription"
         >

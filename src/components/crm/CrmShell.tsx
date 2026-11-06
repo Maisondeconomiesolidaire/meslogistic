@@ -3,8 +3,8 @@ import { ClipboardList, Menu, Moon, Store, Sun, Truck } from "lucide-react";
 import { Drawer } from "../ui/Drawer";
 
 /** Recycapp layout, with navigation specific to Meslogistic. */
-export function CrmShell({ isDark, onToggleTheme, appSwitcher, account, children }: {
-  isDark: boolean; onToggleTheme: () => void; appSwitcher: ReactNode; account: ReactNode; children: ReactNode;
+export function CrmShell({ isDark, onToggleTheme, account, children }: {
+  isDark: boolean; onToggleTheme: () => void; account: ReactNode; children: ReactNode;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const brand = <a href="/" className="flex min-w-0 items-center gap-2 text-lg font-bold tracking-tight" aria-label="Meslogistic — accueil"><Truck className="h-7 w-7 shrink-0 text-brand-500" /><span>Meslogistic</span></a>;
@@ -17,14 +17,14 @@ export function CrmShell({ isDark, onToggleTheme, appSwitcher, account, children
   return <div className={isDark ? "dark" : "crm-light"}>
     <div className="flex min-h-screen bg-[var(--crm-bg)] text-zinc-100 transition-colors duration-200">
       <aside className="fixed inset-y-0 left-0 z-30 hidden w-64 flex-col border-r border-[var(--crm-border)] bg-[var(--crm-surface)] lg:flex">
-        <div className="flex h-16 items-center justify-between gap-2 border-b border-[var(--crm-border)] px-5">{brand}{appSwitcher}</div>
+        <div className="flex h-16 items-center gap-2 border-b border-[var(--crm-border)] px-5">{brand}</div>
         <nav aria-label="Navigation principale" className="flex-1 space-y-1 overflow-y-auto p-3">{navigation}</nav>
         <div className="space-y-2 border-t border-[var(--crm-border)] p-3">{footer}</div>
       </aside>
       <div className="min-w-0 flex-1 lg:pl-64">
         <div className="sticky top-0 z-30 flex h-14 items-center justify-between border-b border-[var(--crm-border)] bg-[color:color-mix(in_srgb,var(--crm-bg)_92%,transparent)] px-4 backdrop-blur lg:hidden">
           <button type="button" aria-label="Ouvrir le menu" onClick={() => setMenuOpen(true)} className="rounded-lg p-2 text-zinc-300 hover:bg-[var(--crm-surface-2)] hover:text-zinc-100"><Menu className="h-5 w-5" /></button>
-          {brand}<div className="ml-auto flex items-center gap-1">{appSwitcher}</div>
+          {brand}
         </div>
         <main>{children}</main>
       </div>
