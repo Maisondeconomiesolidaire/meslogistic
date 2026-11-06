@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from "react";
-import { ClipboardList, Menu, Moon, Store, Sun, Truck } from "lucide-react";
+import { ClipboardList, Menu, Moon, Store, Sun } from "lucide-react";
 import { Drawer } from "../ui/Drawer";
 
 /** Recycapp layout, with navigation specific to Meslogistic. */
@@ -7,7 +7,7 @@ export function CrmShell({ isDark, onToggleTheme, account, children }: {
   isDark: boolean; onToggleTheme: () => void; account: ReactNode; children: ReactNode;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
-  const brand = <a href="/" className="flex min-w-0 items-center gap-2 text-lg font-bold tracking-tight" aria-label="Meslogistic — accueil"><Truck className="h-7 w-7 shrink-0 text-brand-500" /><span>Meslogistic</span></a>;
+  const brand = <a href="/" className="flex min-w-0 items-center text-lg font-bold tracking-tight" aria-label="Meslogistic — accueil">Meslogistic</a>;
   const navigation = <a href="/" aria-current="page" onClick={() => setMenuOpen(false)} className="grid grid-cols-[20px_minmax(0,1fr)_auto] items-center gap-3 rounded-lg border-l-2 border-brand-500 bg-brand-600/15 px-3 py-2.5 text-sm font-medium text-brand-300 transition-colors"><ClipboardList className="h-5 w-5 shrink-0 justify-self-center" /><span className="min-w-0 truncate">Demandes</span></a>;
   const footer = <>
     <a href="https://batire.groupemes.fr" className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-zinc-400 transition-colors hover:bg-[var(--crm-surface-2)] hover:text-zinc-100"><Store className="h-4 w-4 shrink-0" /><span className="truncate">Retour à la boutique</span></a>
