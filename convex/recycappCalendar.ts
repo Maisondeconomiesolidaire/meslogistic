@@ -1,0 +1,187 @@
+import { mutation, query, type QueryCtx } from "./_generated/server";
+import { v } from "convex/values";
+import { Doc, Id } from "./_generated/dataModel";
+import {
+  formatUserName,
+  hasCrmPermission,
+  requireCrmPermission,
+  requireUser,
+} from "./lib";
+
+/**
+ * Durée hebdomadaire de travail d'un salarié, en heures.
+ *
+ * Le contrat RH fait foi (base « un mois = 4 semaines », comme la page Agents
+ * polyvalents) ; à défaut, la somme des créneaux de son planning hebdomadaire.
+ * `null` quand aucune des deux sources n'est renseignée : un pourcentage de
+ * temps alloué n'aurait alors aucun sens.
+ */
+async function weeklyHours(ctx: QueryCtx, worker: Doc<"polyvalentWorkers">) {
+  if (worker.monthlyHours) return worker.monthlyHours / 4;
+  const schedule = await ctx.db.query("polyvalentWorkerSchedules").withIndex("by_worker", (q) => q.eq("workerId", worker._id)).unique();
+  if (!schedule) return null;
+  const total = schedule.availability.reduce((hours, slot) => {
+    const [startHour, startMinute] = slot.start.split(":").map(Number);
+    const [endHour, endMinute] = slot.end.split(":").map(Number);
+    return hours + Math.max(0, (endHour * 60 + endMinute - startHour * 60 - startMinute) / 60);
+  }, 0);
+  return total > 0 ? total : null;
+}
+
+/** Salariés affectés à un évènement, avec leur durée hebdomadaire. */
+async function eventWorkers(ctx: QueryCtx, workerIds: Id<"polyvalentWorkers">[] | undefined) {
+  if (!workerIds?.length) return [];
+  const workers = await Promise.all(workerIds.map((id) => ctx.db.get(id)));
+  return Promise.all(
+    workers.filter((worker): worker is Doc<"polyvalentWorkers"> => worker !== null).map(async (worker) => ({
+      _id: worker._id,
+      name: `${worker.firstName} ${worker.lastName}`.trim(),
+      weeklyHours: await weeklyHours(ctx, worker),
+    })),
+  );
+}
+
+/**
+ * Qui peut supprimer cet évènement.
+ *
+ * La permission `calendrier:delete` autorise tout le calendrier ; à défaut,
+ * chacun peut supprimer ce qu'il a lui-même créé. Sans cette seconde règle,
+ * l'équipe qui anime le calendrier (permissions `read`/`update`) ne pouvait
+ * retirer aucun de ses propres évènements.
+ */
+function canDeleteEvent(
+  event: Doc<"recycappCalendarEvents">,
+  clerkId: string,
+  globalDelete: boolean,
+) {
+  return globalDelete || (event.authorClerkId !== undefined && event.authorClerkId === clerkId);
+}
+
+export const list = query({ args: { from: v.number(), to: v.number() }, handler: async (ctx, args) => {
+  await requireCrmPermission(ctx, "calendrier", "read");
+  const identity = await requireUser(ctx);
+  const globalDelete = await hasCrmPermission(ctx, "calendrier", "delete");
+  const events = await ctx.db.query("recycappCalendarEvents").withIndex("by_startAt", (q) => q.gte("startAt", args.from).lte("startAt", args.to)).collect();
+  return Promise.all(events.map(async (event) => ({
+    ...event,
+    attachmentUrls: await Promise.all(event.attachments.map((id) => ctx.storage.getUrl(id))),
+    workers: await eventWorkers(ctx, event.workerIds),
+    canDelete: canDeleteEvent(event, identity.subject, globalDelete),
+  })));
+} });
+export const create = mutation({ args: { title: v.string(), animationType: v.optional(v.string()), structure: v.optional(v.string()), activity: v.optional(v.string()), location: v.optional(v.string()), relatedEvent: v.optional(v.string()), targetAudience: v.optional(v.string()), organizer: v.optional(v.string()), completed: v.optional(v.boolean()), workerIds: v.optional(v.array(v.id("polyvalentWorkers"))), startAt: v.number(), endAt: v.number(), attachments: v.array(v.id("_storage")), urls: v.array(v.string()) }, handler: async (ctx, args) => {
+  await requireCrmPermission(ctx, "calendrier", "create");
+  const identity = await requireUser(ctx);
+  if (!args.title.trim() || args.endAt <= args.startAt) throw new Error("Renseignez un intitulé et des dates valides.");
+  return await ctx.db.insert("recycappCalendarEvents", {
+    ...args,
+    title: args.title.trim(),
+    authorClerkId: identity.subject,
+    authorName: formatUserName(identity),
+    createdAt: Date.now(),
+  });
+} });
+
+/** Modifie l'ensemble des informations d'un évènement existant. */
+export const update = mutation({ args: { id: v.id("recycappCalendarEvents"), title: v.string(), animationType: v.optional(v.string()), structure: v.optional(v.string()), activity: v.optional(v.string()), location: v.optional(v.string()), relatedEvent: v.optional(v.string()), targetAudience: v.optional(v.string()), organizer: v.optional(v.string()), workerIds: v.optional(v.array(v.id("polyvalentWorkers"))), startAt: v.number(), endAt: v.number(), attachments: v.array(v.id("_storage")), urls: v.array(v.string()) }, handler: async (ctx, args) => {
+  await requireCrmPermission(ctx, "calendrier", "update");
+  if (!args.title.trim() || args.endAt <= args.startAt) throw new Error("Renseignez un intitulé et des dates valides.");
+  if (!await ctx.db.get(args.id)) throw new Error("Évènement introuvable.");
+  const text = (value?: string) => value?.trim() || undefined;
+  await ctx.db.patch(args.id, {
+    title: args.title.trim(),
+    animationType: text(args.animationType),
+    structure: text(args.structure),
+    activity: text(args.activity),
+    location: text(args.location),
+    relatedEvent: text(args.relatedEvent),
+    targetAudience: text(args.targetAudience),
+    organizer: text(args.organizer),
+    workerIds: args.workerIds?.length ? args.workerIds : undefined,
+    startAt: args.startAt,
+    endAt: args.endAt,
+    attachments: args.attachments,
+    urls: args.urls.map((url) => url.trim()).filter(Boolean),
+  });
+} });
+/**
+ * Équipe attribuable à un évènement : salariés actifs, avec leur durée
+ * hebdomadaire. Lisible avec la seule permission « calendrier » — la page
+ * Agents polyvalents n'est pas ouverte à tout le monde.
+ */
+export const assignableWorkers = query({ args: {}, handler: async (ctx) => {
+  await requireCrmPermission(ctx, "calendrier", "read");
+  return await assignableWorkerList(ctx);
+} });
+
+/**
+ * Équipe attribuable, sans contrôle de permission : l'appelant fait le sien.
+ * Partagée avec l'espace partagé de Mes Outils, qui propose le même champ
+ * « Salariés mobilisés » sous sa propre clé de permission.
+ */
+export async function assignableWorkerList(ctx: QueryCtx) {
+  const workers = await ctx.db.query("polyvalentWorkers").take(1000);
+  const active = workers.filter((worker) => worker.activeOverride ?? worker.active ?? true);
+  const withHours = await Promise.all(active.map(async (worker) => ({
+    _id: worker._id,
+    name: `${worker.firstName} ${worker.lastName}`.trim(),
+    firstName: worker.firstName,
+    lastName: worker.lastName,
+    email: worker.email,
+    sites: worker.sites,
+    employmentType: worker.employmentType,
+    weeklyHours: await weeklyHours(ctx, worker),
+  })));
+  return withHours.sort((a, b) => a.name.localeCompare(b.name, "fr"));
+}
+
+/**
+ * Partage (ou retire) l'évènement dans l'espace partagé de Mes Outils.
+ *
+ * Rien n'est recopié : Mes Outils lit le calendrier Recyclerie. Un évènement
+ * modifié ici l'est donc partout, et il ne peut pas exister deux versions.
+ */
+export const setShared = mutation({ args: { id: v.id("recycappCalendarEvents"), shared: v.boolean() }, handler: async (ctx, args) => {
+  await requireCrmPermission(ctx, "calendrier", "update");
+  if (!await ctx.db.get(args.id)) throw new Error("Évènement introuvable.");
+  await ctx.db.patch(args.id, { sharedInMesOutils: args.shared });
+} });
+
+/** Réattribue l'évènement à une nouvelle liste de salariés. */
+export const setWorkers = mutation({ args: { id: v.id("recycappCalendarEvents"), workerIds: v.array(v.id("polyvalentWorkers")) }, handler: async (ctx, args) => {
+  await requireCrmPermission(ctx, "calendrier", "update");
+  if (!await ctx.db.get(args.id)) throw new Error("Évènement introuvable.");
+  await ctx.db.patch(args.id, { workerIds: args.workerIds });
+} });
+
+export const remove = mutation({ args: { id: v.id("recycappCalendarEvents") }, handler: async (ctx, args) => {
+  await requireCrmPermission(ctx, "calendrier", "read");
+  const identity = await requireUser(ctx);
+  const event = await ctx.db.get(args.id);
+  if (!event) return;
+  const globalDelete = await hasCrmPermission(ctx, "calendrier", "delete");
+  if (!canDeleteEvent(event, identity.subject, globalDelete)) {
+    throw new Error("Suppression non autorisée.");
+  }
+  await ctx.db.delete(args.id);
+} });
+
+/** Champs d'un évènement dont les valeurs sont choisies dans une liste. */
+const OPTION_FIELD = v.union(v.literal("animationType"), v.literal("structure"), v.literal("activity"), v.literal("targetAudience"));
+
+export const options = query({ args: {}, handler: async (ctx) => {
+  await requireCrmPermission(ctx, "calendrier", "read");
+  const rows = await ctx.db.query("recycappCalendarOptions").collect();
+  return rows.map((row) => ({ field: row.field, label: row.label }));
+} });
+
+/** Ajoute une option de liste déroulante, visible ensuite par toute l'équipe. */
+export const addOption = mutation({ args: { field: OPTION_FIELD, label: v.string() }, handler: async (ctx, args) => {
+  await requireCrmPermission(ctx, "calendrier", "create");
+  const label = args.label.trim();
+  if (!label) throw new Error("Renseignez le libellé de l'option.");
+  const existing = await ctx.db.query("recycappCalendarOptions").withIndex("by_field", (q) => q.eq("field", args.field)).collect();
+  if (existing.some((row) => row.label.toLowerCase() === label.toLowerCase())) return label;
+  await ctx.db.insert("recycappCalendarOptions", { field: args.field, label, createdAt: Date.now() });
+  return label;
+} });

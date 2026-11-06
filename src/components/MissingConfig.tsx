@@ -1,0 +1,3 @@
+export function MissingConfig({ missing }: { missing: string[] }) {
+  return <main className="flex min-h-screen items-center justify-center bg-zinc-950 p-6 text-zinc-100"><div className="w-full max-w-xl rounded-2xl border border-zinc-800 bg-zinc-900 p-8"><h1 className="text-2xl font-bold">Meslogistic</h1><h2 className="mt-5 text-lg font-semibold text-amber-400">Configuration requise</h2><p className="mt-3 text-zinc-400">Renseignez ces variables dans le projet frontend :</p><ul className="mt-3 list-inside list-disc text-sm text-amber-300">{missing.map(name=><li key={name}>{name}</li>)}</ul><p className="mt-5 text-sm text-zinc-400">Utilisez le déploiement Convex et la clé publique Clerk de production du groupe. Le backend est géré dans Mes Outils.</p></div></main>;
+}

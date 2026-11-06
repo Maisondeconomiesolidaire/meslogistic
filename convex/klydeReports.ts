@@ -1,0 +1,960 @@
+/**
+ * Rapports de ventes Klyd.
+ *
+ * Le chiffre d'affaires se lit sur le stock, pas sur les emails Vinted ni sur
+ * les commandes boutique : une vente est comptée dès que l'article est
+ * enregistré « Vendu ». La confirmation ultérieure « Gagné » ne doit pas
+ * déplacer le chiffre d'affaires vers un autre mois.
+ */
+import { action, internalQuery, mutation, query } from "./_generated/server";
+import type { QueryCtx } from "./_generated/server";
+import { v } from "convex/values";
+import { internal } from "./_generated/api";
+import type { Doc } from "./_generated/dataModel";
+import { requireCrmPermission } from "./lib";
+import {
+  isRecordedKlydeSale as isRecordedSale,
+  isReturnedKlydeSale,
+  klydeReturnCost,
+  klydeSaleAmount as saleAmount,
+} from "./lib/klydeSalesRevenue";
+import { summarizeStoreRevenue } from "./lib/klydeStoreRevenue";
+import { klydeAverageWeightKg } from "./klydeTaxonomy";
+import { bytesToBase64, esc, resendSend } from "./emails";
+import { buildPdf, CONTENT_WIDTH, type PdfColor, type PdfElement } from "./pdf";
+
+const PAGE_KEY = "klyde:rapports";
+/** Expéditeur : domaine vérifié sur Resend, nom de l'enseigne du rapport. */
+function emailFrom(outlet: ReportOutlet) {
+  return `${outletName(outlet)} <no-reply@mesoutils.eco-solidaire.fr>`;
+}
+
+const INK: PdfColor = [0.11, 0.12, 0.14];
+const MUTED: PdfColor = [0.45, 0.47, 0.5];
+const HAIRLINE: PdfColor = [0.85, 0.86, 0.88];
+const BAND: PdfColor = [0.95, 0.96, 0.97];
+
+export const MONTHS = [
+  "janvier", "février", "mars", "avril", "mai", "juin",
+  "juillet", "août", "septembre", "octobre", "novembre", "décembre",
+];
+
+/** Article vendu, ramené à ce dont un rapport a besoin. */
+export type ReportSale = {
+  id: string;
+  title: string;
+  sku?: string;
+  outlet: "klyd" | "mobifrip";
+  amount: number;
+  /** Poids de l'article en kg : celui saisi, sinon la moyenne de sa catégorie. */
+  weightKg: number;
+  /** Compteur Vinted relevé manuellement au moment de la vente. */
+  viewsAtSale?: number;
+  soldAt: number;
+};
+
+/** Enseigne du rapport, ou « toutes » quand les deux sont additionnées. */
+export type ReportOutlet = "klyd" | "mobifrip" | null;
+
+const OUTLET_NAMES: Record<"klyd" | "mobifrip", string> = {
+  klyd: "Klyd",
+  mobifrip: "Mobifrip",
+};
+
+/** Coordonnées portées par l'enseigne, quand elles sont connues. */
+const OUTLET_ADDRESS: Partial<Record<"klyd" | "mobifrip", string[]>> = {
+  mobifrip: ["4 rue de la Prairie", "60650 Lachapelle-aux-Pots"],
+};
+
+export function outletName(outlet: ReportOutlet) {
+  return outlet ? OUTLET_NAMES[outlet] : "Klyd & Mobifrip";
+}
+
+export type SalesReport = {
+  year: number;
+  /** Enseigne retenue, `null` si le rapport couvre les deux. */
+  outlet: ReportOutlet;
+  /** 0-11, ou null pour l'année entière. */
+  month: number | null;
+  label: string;
+  revenue: number;
+  salesCount: number;
+  averageBasket: number;
+  /** Poids total vendu sur la période, en kg. */
+  weightKg: number;
+  /** CA par enseigne. */
+  byOutlet: { klyd: number; mobifrip: number };
+  /** CA de chaque mois de l'année, index 0 = janvier (toujours 12 entrées). */
+  monthly: number[];
+  /** Poids vendu chaque mois, en kg, aligné sur `monthly`. */
+  monthlyWeight: number[];
+  /** Ventes en attente d'encaissement (expédiées, pas encore gagnées). */
+  pendingRevenue: number;
+  pendingCount: number;
+  /** Retours et remboursements de la période : ce qu'ils laissent à notre charge. */
+  returnsCost: number;
+  returnsCount: number;
+  /** Chiffre d'affaires une fois les retours déduits. */
+  netRevenue: number;
+  sales: ReportSale[];
+  generatedAt: number;
+};
+
+/**
+ * Poids d'un article vendu, en kg.
+ *
+ * Le poids saisi prime ; à défaut, le barème de la taxonomie donne la moyenne
+ * de la catégorie. Le stock est ancien et beaucoup d'articles n'ont jamais eu
+ * de pesée : sans cette estimation, le total vendu serait très en dessous de
+ * la réalité et illisible pour un bilan de réemploi.
+ */
+function saleWeight(item: Doc<"klydeItems">) {
+  const weight = item.weightKg;
+  if (typeof weight === "number" && weight > 0) return weight;
+  return klydeAverageWeightKg(item.category, item.subcategory, item.subsubcategory);
+}
+
+/**
+ * Date de vente : celle du passage en « Vendu ». Les anciens articles, qui ne
+ * disposent pas encore de cette date, gardent leur date historique de gain.
+ */
+function saleDate(item: Doc<"klydeItems">) {
+  return item.saleRecordedAt ?? item.soldAt ?? item.updatedAt;
+}
+
+function inParis(ms: number) {
+  // Un article vendu le 1er du mois à 00h30 à Paris appartient à ce mois-là,
+  // pas au précédent : le découpage suit le fuseau local, pas UTC.
+  const parts = new Intl.DateTimeFormat("fr-FR", {
+    timeZone: "Europe/Paris",
+    year: "numeric",
+    month: "numeric",
+    day: "numeric",
+  }).formatToParts(new Date(ms));
+  const value = (type: string) => Number(parts.find((part) => part.type === type)?.value ?? 0);
+  return { year: value("year"), month: value("month") - 1, day: value("day") };
+}
+
+function formatEuro(amount: number) {
+  return `${amount.toFixed(2).replace(".", ",")} €`;
+}
+
+/** Poids en kg. Sous le kilo, deux décimales ; au-delà, une suffit. */
+function formatWeight(kg: number) {
+  return `${kg.toFixed(kg < 1 ? 2 : 1).replace(".", ",")} kg`;
+}
+
+function formatDay(ms: number) {
+  const { day, month, year } = inParis(ms);
+  return `${String(day).padStart(2, "0")}/${String(month + 1).padStart(2, "0")}/${year}`;
+}
+
+export function periodLabel(year: number, month: number | null) {
+  return month === null ? `Année ${year}` : `${MONTHS[month]} ${year}`;
+}
+
+/** Cœur du rapport, partagé par la lecture à l'écran et par l'envoi PDF. */
+async function buildReport(
+  ctx: QueryCtx,
+  year: number,
+  month: number | null,
+  outlet: ReportOutlet,
+): Promise<SalesReport> {
+  const items = await ctx.db.query("klydeItems").collect();
+  const sold = items.filter(isRecordedSale);
+
+  // Retours et remboursements de la période : la vente est sortie du chiffre
+  // d'affaires par `isRecordedSale`, ce qui reste à notre charge se compte ici.
+  let returnsCost = 0;
+  let returnsCount = 0;
+  for (const item of items) {
+    if (!isReturnedKlydeSale(item)) continue;
+    const itemOutlet = item.outlet === "mobifrip" ? "mobifrip" : "klyd";
+    if (outlet && itemOutlet !== outlet) continue;
+    const when = inParis(item.returnedAt ?? saleDate(item));
+    if (when.year !== year) continue;
+    if (month !== null && when.month !== month) continue;
+    returnsCost += klydeReturnCost(item);
+    returnsCount += 1;
+  }
+
+  const monthly = new Array(12).fill(0) as number[];
+  const monthlyWeight = new Array(12).fill(0) as number[];
+  const sales: ReportSale[] = [];
+  const byOutlet = { klyd: 0, mobifrip: 0 };
+  let revenue = 0;
+  let weightKg = 0;
+
+  for (const item of sold) {
+    const itemOutlet = item.outlet === "mobifrip" ? "mobifrip" : "klyd";
+    // Le filtre s'applique aussi a la serie mensuelle : sans cela, les barres
+    // et le total du rapport raconteraient deux perimetres differents.
+    if (outlet && itemOutlet !== outlet) continue;
+    const soldAt = saleDate(item);
+    const when = inParis(soldAt);
+    if (when.year !== year) continue;
+    const amount = saleAmount(item);
+    const itemWeight = saleWeight(item);
+    monthly[when.month] += amount;
+    monthlyWeight[when.month] += itemWeight;
+    if (month !== null && when.month !== month) continue;
+
+    revenue += amount;
+    weightKg += itemWeight;
+    byOutlet[itemOutlet] += amount;
+    sales.push({
+      id: item._id,
+      title: item.title,
+      sku: item.sku,
+      outlet: itemOutlet,
+      amount,
+      weightKg: itemWeight,
+      viewsAtSale: item.viewsAtSale,
+      soldAt,
+    });
+  }
+
+  sales.sort((a, b) => b.soldAt - a.soldAt);
+  return {
+    year,
+    outlet,
+    month,
+    label: periodLabel(year, month),
+    revenue: Math.round(revenue * 100) / 100,
+    returnsCost: Math.round(returnsCost * 100) / 100,
+    returnsCount,
+    netRevenue: Math.round((revenue - returnsCost) * 100) / 100,
+    salesCount: sales.length,
+    averageBasket: sales.length ? Math.round((revenue / sales.length) * 100) / 100 : 0,
+    weightKg: Math.round(weightKg * 100) / 100,
+    byOutlet: {
+      klyd: Math.round(byOutlet.klyd * 100) / 100,
+      mobifrip: Math.round(byOutlet.mobifrip * 100) / 100,
+    },
+    monthly: monthly.map((value) => Math.round(value * 100) / 100),
+    monthlyWeight: monthlyWeight.map((value) => Math.round(value * 100) / 100),
+    pendingRevenue: 0,
+    pendingCount: 0,
+    sales,
+    generatedAt: Date.now(),
+  };
+}
+
+const outletArg = v.optional(
+  v.union(v.literal("klyd"), v.literal("mobifrip"), v.null()),
+);
+
+export const salesReport = query({
+  args: {
+    year: v.number(),
+    month: v.optional(v.union(v.number(), v.null())),
+    outlet: outletArg,
+  },
+  handler: async (ctx, args): Promise<SalesReport> => {
+    await requireCrmPermission(ctx, PAGE_KEY, "read");
+    return buildReport(ctx, args.year, args.month ?? null, args.outlet ?? null);
+  },
+});
+
+export const reportForEmail = internalQuery({
+  args: {
+    year: v.number(),
+    month: v.union(v.number(), v.null()),
+    outlet: v.union(v.literal("klyd"), v.literal("mobifrip"), v.null()),
+  },
+  handler: async (ctx, args): Promise<SalesReport> =>
+    buildReport(ctx, args.year, args.month, args.outlet),
+});
+
+/** Années où au moins une vente a été enregistrée, la plus récente d'abord. */
+export const availableYears = query({
+  args: {},
+  handler: async (ctx) => {
+    await requireCrmPermission(ctx, PAGE_KEY, "read");
+    const items = await ctx.db.query("klydeItems").collect();
+    const years = new Set(
+      items.filter(isRecordedSale).map((item) => inParis(saleDate(item)).year),
+    );
+    years.add(inParis(Date.now()).year);
+    return [...years].sort((a, b) => b - a);
+  },
+});
+
+/* ─────────────────────────────── Le PDF ────────────────────────────────── */
+
+/**
+ * Détail des ventes, une ligne par article.
+ *
+ * Aucune troncature : le rapport sert de justificatif, il doit porter la
+ * totalité des articles vendus sur la période, quitte à courir sur des
+ * dizaines de pages — `buildPdf` pagine tout seul.
+ */
+function salesTable(report: SalesReport): PdfElement[] {
+  const weightColumn = CONTENT_WIDTH * 0.84;
+  const elements: PdfElement[] = [
+    { kind: "band", height: 24, color: BAND, spaceBefore: 26 },
+    { kind: "text", text: "ARTICLE", size: 8.5, bold: true, color: MUTED, x: 10, spaceBefore: 4 },
+    {
+      kind: "text",
+      text: "POIDS",
+      size: 8.5,
+      bold: true,
+      color: MUTED,
+      width: weightColumn,
+      align: "right",
+      inline: true,
+    },
+    {
+      kind: "text",
+      text: "MONTANT",
+      size: 8.5,
+      bold: true,
+      color: MUTED,
+      width: CONTENT_WIDTH - 10,
+      align: "right",
+      inline: true,
+    },
+  ];
+  if (report.sales.length === 0) {
+    elements.push({
+      kind: "text",
+      text: "Aucune vente sur la période.",
+      size: 10,
+      color: MUTED,
+      x: 10,
+      spaceBefore: 14,
+    });
+    return elements;
+  }
+  report.sales.forEach((sale, index) => {
+    const title = sale.title.length > 52 ? `${sale.title.slice(0, 51)}…` : sale.title;
+    elements.push(
+      {
+        kind: "text",
+        text: `${formatDay(sale.soldAt)}   ${title}`,
+        size: 9.5,
+        color: INK,
+        x: 10,
+        width: CONTENT_WIDTH * 0.7,
+        spaceBefore: index === 0 ? 12 : 3,
+      },
+      {
+        kind: "text",
+        text: formatWeight(sale.weightKg),
+        size: 9.5,
+        color: MUTED,
+        width: weightColumn,
+        align: "right",
+        inline: true,
+      },
+      {
+        kind: "text",
+        text: formatEuro(sale.amount),
+        size: 9.5,
+        color: INK,
+        width: CONTENT_WIDTH - 10,
+        align: "right",
+        inline: true,
+      },
+    );
+  });
+  return elements;
+}
+
+export function reportDocument(report: SalesReport): PdfElement[] {
+  const rightHalf = CONTENT_WIDTH * 0.5;
+  const elements: PdfElement[] = [
+    { kind: "text", text: "RAPPORT DE VENTES", size: 22, bold: true, color: INK },
+    {
+      kind: "text",
+      text: outletName(report.outlet),
+      size: 13,
+      bold: true,
+      color: INK,
+      x: rightHalf,
+      width: rightHalf,
+      align: "right",
+      inline: true,
+    },
+    { kind: "text", text: report.label, size: 12, color: MUTED, spaceBefore: 2 },
+    // Colonne de droite : coordonnées de l'enseigne puis date d'édition. La
+    // première ligne se pose à côté de la période, les suivantes descendent —
+    // sinon elles s'écriraient toutes sur la même ligne de base.
+    ...([
+      ...(report.outlet ? OUTLET_ADDRESS[report.outlet] ?? [] : []),
+      `Édité le ${formatDay(report.generatedAt)}`,
+    ].map((text, index) => ({
+      kind: "text" as const,
+      text,
+      size: 9,
+      color: MUTED,
+      x: rightHalf,
+      width: rightHalf,
+      align: "right" as const,
+      inline: index === 0,
+    }))),
+    { kind: "rule", spaceBefore: 16, color: HAIRLINE },
+  ];
+
+  // Quatre chiffres clés, en colonnes.
+  const kpis: Array<[string, string]> = [
+    ["Chiffre d'affaires", formatEuro(report.revenue)],
+    ["Ventes", String(report.salesCount)],
+    ["Panier moyen", formatEuro(report.averageBasket)],
+    ["Poids vendu", formatWeight(report.weightKg)],
+  ];
+  const columnWidth = CONTENT_WIDTH / kpis.length;
+  kpis.forEach(([label], index) => {
+    elements.push({
+      kind: "text",
+      text: label.toUpperCase(),
+      size: 8,
+      bold: true,
+      color: MUTED,
+      x: index * columnWidth,
+      width: columnWidth,
+      spaceBefore: index === 0 ? 18 : 0,
+      inline: index > 0,
+    });
+  });
+  kpis.forEach(([, value], index) => {
+    elements.push({
+      kind: "text",
+      text: value,
+      // Quatre colonnes : un corps plus mesuré évite que « 1 234,56 kg » ne
+      // déborde sur la colonne voisine.
+      size: 15,
+      bold: true,
+      color: INK,
+      x: index * columnWidth,
+      width: columnWidth,
+      spaceBefore: index === 0 ? 6 : 0,
+      inline: index > 0,
+    });
+  });
+
+  const outletLine = [
+    report.outlet === null && report.byOutlet.klyd > 0
+      ? `Klyd ${formatEuro(report.byOutlet.klyd)}`
+      : null,
+    report.outlet === null && report.byOutlet.mobifrip > 0
+      ? `Mobifrip ${formatEuro(report.byOutlet.mobifrip)}`
+      : null,
+    report.pendingCount > 0
+      ? `En cours d'encaissement : ${formatEuro(report.pendingRevenue)} (${report.pendingCount})`
+      : null,
+  ].filter((value): value is string => Boolean(value));
+  if (outletLine.length > 0) {
+    elements.push({
+      kind: "text",
+      text: outletLine.join("  ·  "),
+      size: 9.5,
+      color: MUTED,
+      spaceBefore: 14,
+    });
+  }
+
+  // Vue annuelle : d'abord le récapitulatif mois par mois, puis le détail des
+  // ventes — le même que la vue mensuelle, sur l'année entière.
+  if (report.month === null) {
+    // Colonne du poids calée bien à gauche du chiffre d'affaires : l'en-tête
+    // « CHIFFRE D'AFFAIRES » est long, il mordrait sur « POIDS ».
+    const weightColumn = CONTENT_WIDTH * 0.62;
+    elements.push(
+      { kind: "band", height: 24, color: BAND, spaceBefore: 26 },
+      { kind: "text", text: "MOIS", size: 8.5, bold: true, color: MUTED, x: 10, spaceBefore: 4 },
+      {
+        kind: "text",
+        text: "POIDS",
+        size: 8.5,
+        bold: true,
+        color: MUTED,
+        width: weightColumn,
+        align: "right",
+        inline: true,
+      },
+      {
+        kind: "text",
+        text: "CHIFFRE D'AFFAIRES",
+        size: 8.5,
+        bold: true,
+        color: MUTED,
+        width: CONTENT_WIDTH - 10,
+        align: "right",
+        inline: true,
+      },
+    );
+    report.monthly.forEach((amount, index) => {
+      elements.push(
+        {
+          kind: "text",
+          text: MONTHS[index],
+          size: 10,
+          color: amount > 0 ? INK : MUTED,
+          x: 10,
+          spaceBefore: index === 0 ? 12 : 3,
+        },
+        {
+          kind: "text",
+          text: formatWeight(report.monthlyWeight[index]),
+          size: 10,
+          color: MUTED,
+          width: weightColumn,
+          align: "right",
+          inline: true,
+        },
+        {
+          kind: "text",
+          text: formatEuro(amount),
+          size: 10,
+          bold: amount > 0,
+          color: amount > 0 ? INK : MUTED,
+          width: CONTENT_WIDTH - 10,
+          align: "right",
+          inline: true,
+        },
+      );
+    });
+  }
+  elements.push(...salesTable(report));
+
+  elements.push(
+    { kind: "rule", spaceBefore: 14, color: HAIRLINE },
+    { kind: "text", text: "Total", size: 12, bold: true, color: INK, x: 10, spaceBefore: 8 },
+    {
+      kind: "text",
+      text: formatWeight(report.weightKg),
+      size: 11,
+      bold: true,
+      color: MUTED,
+      width: CONTENT_WIDTH * 0.84,
+      align: "right",
+      inline: true,
+    },
+    {
+      kind: "text",
+      text: formatEuro(report.revenue),
+      size: 14,
+      bold: true,
+      color: INK,
+      width: CONTENT_WIDTH - 10,
+      align: "right",
+      inline: true,
+    },
+  );
+  return elements;
+}
+
+/* ───────────────────────────── Partage par email ───────────────────────── */
+
+function reportEmailHtml(report: SalesReport, message: string) {
+  const row = (label: string, value: string) =>
+    `<tr><td style="padding:7px 0;font-size:13px;color:#6b7280">${esc(label)}</td>` +
+    `<td style="padding:7px 0;font-size:13px;color:#111827;text-align:right;font-weight:600">${esc(value)}</td></tr>`;
+
+  const body = message
+    .split(/\n{2,}/)
+    .map((block) => esc(block.trim()).replace(/\n/g, "<br>"))
+    .filter(Boolean)
+    .map(
+      (block) =>
+        `<p style="margin:0 0 14px;font-size:15px;line-height:1.6;color:#1f2937">${block}</p>`,
+    )
+    .join("");
+
+  return `<!doctype html><html><body style="margin:0;background:#f6f7f9;padding:24px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">
+  <div style="max-width:560px;margin:0 auto;background:#ffffff;border:1px solid #e5e7eb;border-radius:14px;overflow:hidden">
+    <div style="padding:22px 26px;border-bottom:1px solid #e5e7eb">
+      <p style="margin:0;font-size:17px;font-weight:700;color:#111827">Rapport de ventes ${esc(outletName(report.outlet))}</p>
+      <p style="margin:4px 0 0;font-size:12px;color:#6b7280">${esc(report.label)}</p>
+    </div>
+    <div style="padding:24px 26px">
+      ${body}
+      <table style="width:100%;border-collapse:collapse;margin-top:18px;border-top:1px solid #e5e7eb">
+        ${row("Chiffre d'affaires", formatEuro(report.revenue))}
+        ${row("Ventes", String(report.salesCount))}
+        ${row("Panier moyen", formatEuro(report.averageBasket))}
+        ${row("Poids vendu", formatWeight(report.weightKg))}
+      </table>
+      <p style="margin:18px 0 0;font-size:12px;color:#6b7280">Le rapport détaillé est joint à cet email au format PDF.</p>
+    </div>
+  </div>
+</body></html>`;
+}
+
+/** Message d'accompagnement par défaut, modifiable avant l'envoi. */
+export function defaultReportMessage(report: SalesReport) {
+  const name = outletName(report.outlet);
+  return [
+    "Bonjour,",
+    "",
+    `Vous trouverez en pièce jointe le rapport de ventes ${name} pour ${report.label.toLowerCase()}.`,
+    "",
+    "Bien cordialement,",
+    name,
+  ].join("\n");
+}
+
+export const emailDraft = query({
+  args: {
+    year: v.number(),
+    month: v.optional(v.union(v.number(), v.null())),
+    outlet: outletArg,
+  },
+  handler: async (ctx, args) => {
+    await requireCrmPermission(ctx, PAGE_KEY, "read");
+    const report = await buildReport(ctx, args.year, args.month ?? null, args.outlet ?? null);
+    return {
+      subject: `Rapport de ventes ${outletName(report.outlet)} — ${report.label}`,
+      message: defaultReportMessage(report),
+      label: report.label,
+      revenue: report.revenue,
+      salesCount: report.salesCount,
+      weightKg: report.weightKg,
+    };
+  },
+});
+
+/**
+ * Envoie le rapport de la période affichée, en pièce jointe PDF. Le rapport est
+ * recalculé ici : le destinataire reçoit l'état réel des ventes au moment de
+ * l'envoi, pas ce qu'affichait un écran resté ouvert.
+ */
+export const sendByEmail = action({
+  args: {
+    to: v.string(),
+    year: v.number(),
+    month: v.optional(v.union(v.number(), v.null())),
+    outlet: outletArg,
+    subject: v.optional(v.string()),
+    message: v.optional(v.string()),
+  },
+  handler: async (ctx, args): Promise<{ sentTo: string; label: string }> => {
+    await ctx.runQuery(internal.klydeReports.assertCanShare, {});
+    const to = args.to.trim();
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(to)) {
+      throw new Error("Adresse email invalide.");
+    }
+
+    const report: SalesReport = await ctx.runQuery(internal.klydeReports.reportForEmail, {
+      year: args.year,
+      month: args.month ?? null,
+      outlet: args.outlet ?? null,
+    });
+    const pdf = buildPdf(reportDocument(report));
+    const subject =
+      args.subject?.trim() || `Rapport de ventes ${outletName(report.outlet)} — ${report.label}`;
+    const message = args.message?.trim() || defaultReportMessage(report);
+
+    const sent = await resendSend(
+      to,
+      subject,
+      reportEmailHtml(report, message),
+      emailFrom(report.outlet),
+      [
+        {
+          filename: `Rapport-${outletName(report.outlet).replace(/\s+/g, "")}-${report.label.replace(/\s+/g, "-")}.pdf`,
+          content: bytesToBase64(pdf),
+        },
+      ],
+    );
+    if (!sent) throw new Error("L'envoi a échoué. Réessayez dans un instant.");
+    return { sentTo: to, label: report.label };
+  },
+});
+
+export const assertCanShare = internalQuery({
+  args: {},
+  handler: async (ctx) => {
+    await requireCrmPermission(ctx, PAGE_KEY, "share");
+    return true;
+  },
+});
+
+/* ─── Chiffre d'affaires du magasin (saisi à la main) ─────────────────────── */
+
+/**
+ * Le magasin n'a pas d'outil de caisse relié : son chiffre d'affaires est
+ * relevé à la main, par recyclerie et par semaine. Ces montants vivent à côté
+ * des ventes en ligne — les additionner d'office masquerait la performance de
+ * chaque canal.
+ */
+const STORE_SITE = v.union(v.literal("60"), v.literal("76"));
+
+/** Semaines proposées : le relevé de l'équipe compte 4 semaines par mois. */
+const STORE_WEEKS = [1, 2, 3, 4];
+
+function assertStorePeriod(year: number, month: number, week: number) {
+  if (!Number.isInteger(year) || year < 2000 || year > 2100) {
+    throw new Error("Année invalide.");
+  }
+  if (!Number.isInteger(month) || month < 0 || month > 11) {
+    throw new Error("Mois invalide.");
+  }
+  if (!STORE_WEEKS.includes(week)) {
+    throw new Error("La semaine doit être comprise entre 1 et 4.");
+  }
+}
+
+export const storeReport = query({
+  args: {
+    year: v.number(),
+    /** `null` = toute l'année. */
+    month: v.union(v.number(), v.null()),
+    /** `null` = les deux recycleries. */
+    site: v.union(STORE_SITE, v.null()),
+  },
+  handler: async (ctx, { year, month, site }) => {
+    await requireCrmPermission(ctx, PAGE_KEY, "read");
+    const all = await ctx.db
+      .query("klydeStoreRevenues")
+      .withIndex("by_period", (q) => q.eq("year", year))
+      .collect();
+    const annualRows = await Promise.all((["60", "76"] as const).map((storeSite) =>
+      ctx.db.query("klydeStoreAnnualRevenues")
+        .withIndex("by_site_and_year", (q) => q.eq("site", storeSite).eq("year", year))
+        .unique(),
+    ));
+    const annualTotals = annualRows.filter((entry) => entry !== null).filter((entry) => !site || entry.site === site);
+    const scoped = all.filter((entry) => !site || entry.site === site);
+
+    // Totaux par mois : la vue annuelle se lit d'un coup d'œil, et la vue
+    // mensuelle garde le même repère de comparaison.
+    const monthly = Array.from({ length: 12 }, () => 0);
+    for (const entry of scoped) monthly[entry.month] += entry.amount;
+
+    const entries = scoped
+      .filter((entry) => month === null || entry.month === month)
+      .sort((a, b) => a.month - b.month || a.week - b.week || a.site.localeCompare(b.site));
+
+    const weekly = STORE_WEEKS.map((week) =>
+      entries.filter((entry) => entry.week === week).reduce((total, entry) => total + entry.amount, 0),
+    );
+    const { revenue, bySite } = summarizeStoreRevenue(entries, annualTotals, month);
+    const monthlyHasDetail = monthly.map((_, index) => scoped.some((entry) => entry.month === index));
+
+    return {
+      label: month === null ? String(year) : `${MONTHS[month]} ${year}`,
+      revenue,
+      annualTotals: annualTotals.map(({ site, year, amount, note }) => ({ site, year, amount, note })),
+      monthlyHasDetail,
+      monthly,
+      weekly,
+      bySite,
+      entries: entries.map((entry) => ({
+        id: entry._id,
+        site: entry.site,
+        year: entry.year,
+        month: entry.month,
+        week: entry.week,
+        amount: entry.amount,
+        note: entry.note,
+        createdByName: entry.createdByName,
+        updatedAt: entry.updatedAt ?? entry.createdAt,
+      })),
+    };
+  },
+});
+
+/**
+ * Enregistre le relevé d'une semaine. Une même semaine d'une même recyclerie
+ * ne peut être saisie qu'une fois : une nouvelle saisie corrige la précédente,
+ * plutôt que de s'y ajouter en silence.
+ */
+export const saveStoreRevenue = mutation({
+  args: {
+    site: STORE_SITE,
+    year: v.number(),
+    month: v.number(),
+    week: v.number(),
+    amount: v.number(),
+    note: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    await requireCrmPermission(ctx, PAGE_KEY, "create");
+    assertStorePeriod(args.year, args.month, args.week);
+    if (!Number.isFinite(args.amount) || args.amount < 0) {
+      throw new Error("Le montant doit être positif.");
+    }
+    const identity = await ctx.auth.getUserIdentity();
+    const amount = Math.round(args.amount * 100) / 100;
+    const note = args.note?.trim() || undefined;
+    const existing = await ctx.db
+      .query("klydeStoreRevenues")
+      .withIndex("by_site_and_period", (q) =>
+        q.eq("site", args.site).eq("year", args.year).eq("month", args.month).eq("week", args.week),
+      )
+      .unique();
+    if (existing) {
+      await ctx.db.patch(existing._id, { amount, note, updatedAt: Date.now() });
+      return existing._id;
+    }
+    return await ctx.db.insert("klydeStoreRevenues", {
+      site: args.site,
+      year: args.year,
+      month: args.month,
+      week: args.week,
+      amount,
+      note,
+      createdByClerkId: identity?.subject ?? "inconnu",
+      createdByName: identity?.name ?? undefined,
+      createdAt: Date.now(),
+    });
+  },
+});
+
+export const deleteStoreRevenue = mutation({
+  args: { id: v.id("klydeStoreRevenues") },
+  handler: async (ctx, { id }) => {
+    await requireCrmPermission(ctx, PAGE_KEY, "delete");
+    await ctx.db.delete(id);
+  },
+});
+
+/* ─── Analyse : ce qui se vend, et en combien de temps ────────────────────── */
+
+/** Date de mise en vente : la première publication connue, Vinted ou boutique. */
+function listedAt(item: Doc<"klydeItems">) {
+  const dates = [item.vintedAt, item.boutiquePublishedAt].filter(
+    (value): value is number => typeof value === "number",
+  );
+  return dates.length ? Math.min(...dates) : undefined;
+}
+
+/** Jours écoulés entre la mise en ligne et la vente, quand les deux sont connues. */
+function daysToSell(item: Doc<"klydeItems">) {
+  const listed = listedAt(item);
+  const sold = saleDate(item);
+  if (listed === undefined || !sold || sold <= listed) return undefined;
+  return (sold - listed) / 86_400_000;
+}
+
+function median(values: number[]) {
+  if (values.length === 0) return undefined;
+  const sorted = [...values].sort((a, b) => a - b);
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2
+    ? sorted[middle]
+    : (sorted[middle - 1] + sorted[middle]) / 2;
+}
+
+type Ranked = {
+  label: string;
+  count: number;
+  revenue: number;
+  /** Délai moyen de vente sur ce groupe, en jours ; absent si jamais mesurable. */
+  averageDays?: number;
+};
+
+/** Classement d'une dimension (catégorie, marque…) par chiffre d'affaires. */
+function rank(items: Doc<"klydeItems">[], pick: (item: Doc<"klydeItems">) => string | undefined) {
+  const groups = new Map<string, { count: number; revenue: number; days: number[] }>();
+  for (const item of items) {
+    const label = pick(item)?.trim();
+    if (!label) continue;
+    const group = groups.get(label) ?? { count: 0, revenue: 0, days: [] };
+    group.count += item.quantity;
+    group.revenue += saleAmount(item) * item.quantity;
+    const delay = daysToSell(item);
+    if (delay !== undefined) group.days.push(delay);
+    groups.set(label, group);
+  }
+  const ranked: Ranked[] = [...groups.entries()].map(([label, group]) => ({
+    label,
+    count: group.count,
+    revenue: Math.round(group.revenue * 100) / 100,
+    averageDays: group.days.length
+      ? Math.round((group.days.reduce((total, value) => total + value, 0) / group.days.length) * 10) / 10
+      : undefined,
+  }));
+  return ranked.sort((a, b) => b.revenue - a.revenue || b.count - a.count);
+}
+
+/**
+ * Ce qui se vend le mieux, et en combien de temps.
+ *
+ * Un article de recyclerie est unique : classer les ventes par article n'a
+ * aucun sens, deux robes ne sont jamais le même produit. L'analyse porte donc
+ * sur ce qui se répète — catégorie, sous-catégorie, marque, état, taille.
+ */
+export const salesAnalysis = query({
+  args: {
+    year: v.number(),
+    month: v.union(v.number(), v.null()),
+    outlet: v.union(v.literal("klyd"), v.literal("mobifrip"), v.null()),
+  },
+  handler: async (ctx, { year, month, outlet }) => {
+    await requireCrmPermission(ctx, PAGE_KEY, "read");
+    const all = await ctx.db.query("klydeItems").collect();
+    const items = all.filter((item) => {
+      if (!isRecordedSale(item)) return false;
+      if (outlet && (item.outlet ?? "klyd") !== outlet) return false;
+      const when = inParis(saleDate(item));
+      return when.year === year && (month === null || when.month === month);
+    });
+
+    const delays = items
+      .map(daysToSell)
+      .filter((value): value is number => value !== undefined);
+    const views = items
+      .map((item) => item.viewsAtSale)
+      .filter((value): value is number => value !== undefined);
+    // Quatre paliers : sous la semaine, sous le mois, sous le trimestre, au-delà.
+    const buckets = [
+      { label: "Moins de 7 jours", max: 7 },
+      { label: "7 à 30 jours", max: 30 },
+      { label: "30 à 90 jours", max: 90 },
+      { label: "Plus de 90 jours", max: Infinity },
+    ].map((bucket, index, list) => {
+      const min = index === 0 ? 0 : list[index - 1].max;
+      return {
+        label: bucket.label,
+        count: delays.filter((value) => value >= min && value < bucket.max).length,
+      };
+    });
+
+    const sold = items
+      .map((item) => ({
+        id: item._id,
+        title: item.title,
+        category: item.category,
+        brand: item.brand,
+        amount: Math.round(saleAmount(item) * 100) / 100,
+        days: daysToSell(item),
+        listedAt: listedAt(item),
+        soldAt: saleDate(item),
+      }))
+      .filter((entry) => entry.days !== undefined)
+      .sort((a, b) => (a.days ?? 0) - (b.days ?? 0));
+
+    return {
+      label: month === null ? String(year) : `${MONTHS[month]} ${year}`,
+      salesCount: items.reduce((total, item) => total + item.quantity, 0),
+      categories: rank(items, (item) => item.category).slice(0, 10),
+      subcategories: rank(items, (item) => item.subcategory).slice(0, 10),
+      brands: rank(items, (item) => item.brand).slice(0, 10),
+      conditions: rank(items, (item) => item.condition).slice(0, 10),
+      sizes: rank(items, (item) => item.size).slice(0, 10),
+      views: {
+        measured: views.length,
+        unknown: items.length - views.length,
+        average: views.length
+          ? Math.round(views.reduce((total, value) => total + value, 0) / views.length)
+          : undefined,
+        median: views.length ? Math.round(median(views) ?? 0) : undefined,
+      },
+      delay: {
+        measured: delays.length,
+        /** Articles vendus sans date de mise en ligne : le délai leur échappe. */
+        unknown: items.length - delays.length,
+        averageDays: delays.length
+          ? Math.round((delays.reduce((total, value) => total + value, 0) / delays.length) * 10) / 10
+          : undefined,
+        medianDays: delays.length ? Math.round((median(delays) ?? 0) * 10) / 10 : undefined,
+        buckets,
+        fastest: sold.slice(0, 5),
+        slowest: sold.slice(-5).reverse(),
+      },
+    };
+  },
+});

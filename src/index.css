@@ -1,0 +1,636 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+@import "@fontsource-variable/inter";
+
+/* Geist Sans (variable) — police de toute l'application. */
+@font-face {
+  font-family: "Geist";
+  src: url("/fonts/Geist-Variable.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* Dark mode scopé par classe : le layout CRM ajoute `.dark`,
+   les pages publiques (boutique, formulaires) restent en clair. */
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  /* Couleur primaire de l'application : orange #ff7700. */
+  --color-brand-50: #fff4eb;
+  --color-brand-100: #ffe4cc;
+  --color-brand-200: #ffc699;
+  --color-brand-300: #ffa766;
+  --color-brand-400: #ff8d33;
+  --color-brand-500: #ff7700;
+  --color-brand-600: #e66b00;
+  --color-brand-700: #b85400;
+  --color-brand-800: #8a3f00;
+  --color-brand-900: #5c2a00;
+
+  /* Couleurs par type de demande (cf. charte Cycle en Bray) */
+  --color-cycle: #196b24; /* Atelier vélo « Cycle en Bray » */
+  --color-aerogommage: #782170;
+  --color-collecte: #317fa0;
+  --color-boutique: #a0315a;
+
+  /* Palette CRM dédiée */
+  --color-crm-black: #070707;
+  --color-crm-onyx: #0d0d0d;
+  --color-crm-onyx-2: #151515;
+  --color-crm-carbon: #202020;
+
+  --font-sans: "Geist", ui-sans-serif, system-ui, -apple-system, "Segoe UI",
+    Roboto, Helvetica, Arial, sans-serif;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+.dark {
+  --crm-bg: var(--color-crm-black);
+  --crm-surface: var(--color-crm-onyx);
+  --crm-surface-2: var(--color-crm-onyx-2);
+  --crm-surface-3: var(--color-crm-carbon);
+  --crm-border: rgba(255, 255, 255, 0.08);
+  --crm-border-strong: rgba(255, 255, 255, 0.12);
+  --background: var(--crm-bg);
+  --foreground: #faf7f2;
+  --card: var(--crm-surface);
+  --card-foreground: #faf7f2;
+  --popover: var(--crm-surface);
+  --popover-foreground: #faf7f2;
+  --primary: var(--color-brand-500);
+  --primary-foreground: #fff8ef;
+  --secondary: var(--crm-surface-2);
+  --secondary-foreground: #f4f4f5;
+  --muted: var(--crm-surface-2);
+  --muted-foreground: #9f9fa9;
+  --accent: var(--crm-surface-3);
+  --accent-foreground: #faf7f2;
+  --destructive: #ef4444;
+  --border: rgba(255, 255, 255, 0.1);
+  --input: rgba(255, 255, 255, 0.14);
+  --ring: rgba(255, 119, 0, 0.35);
+  --chart-1: #ffb66b;
+  --chart-2: #ff9b3d;
+  --chart-3: #ff7700;
+  --chart-4: #db6200;
+  --chart-5: #b85400;
+  --sidebar: var(--crm-surface);
+  --sidebar-foreground: #faf7f2;
+  --sidebar-primary: var(--color-brand-500);
+  --sidebar-primary-foreground: #fff8ef;
+  --sidebar-accent: var(--crm-surface-2);
+  --sidebar-accent-foreground: #faf7f2;
+  --sidebar-border: rgba(255, 255, 255, 0.1);
+  --sidebar-ring: rgba(255, 119, 0, 0.35);
+  font-family: "Inter Variable", "Geist", ui-sans-serif, system-ui, -apple-system,
+    "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+}
+
+/* ─── CRM light mode ─────────────────────────────────────────────────────── */
+/* Backgrounds */
+.crm-light {
+  --crm-bg: #ffffff;
+  --crm-surface: #ffffff;
+  --crm-surface-2: #fafafa;
+  --crm-surface-3: #f4f4f5;
+  --crm-border: rgba(0, 0, 0, 0.07);
+  --crm-border-strong: rgba(0, 0, 0, 0.11);
+  /* shadcn / ui tokens */
+  --background: #f7f7f8;
+  --foreground: #18181b;
+  --card: #ffffff;
+  --card-foreground: #18181b;
+  --popover: #ffffff;
+  --popover-foreground: #18181b;
+  --primary: var(--color-brand-500);
+  --primary-foreground: #fff8ef;
+  --secondary: #f6f6f7;
+  --secondary-foreground: #18181b;
+  --muted: #f6f6f7;
+  --muted-foreground: #52525b;
+  --accent: #f0f0f1;
+  --accent-foreground: #18181b;
+  --destructive: #dc2626;
+  --border: rgba(0, 0, 0, 0.10);
+  --input: rgba(0, 0, 0, 0.05);
+  --ring: rgba(255, 119, 0, 0.3);
+  --sidebar: #ffffff;
+  --sidebar-foreground: #18181b;
+  --sidebar-accent: #f6f6f7;
+  --sidebar-accent-foreground: #18181b;
+  --sidebar-border: rgba(0, 0, 0, 0.1);
+  --sidebar-ring: rgba(255, 119, 0, 0.3);
+  font-family: "Inter Variable", "Geist", ui-sans-serif, system-ui, -apple-system,
+    "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  color-scheme: light;
+  /* ── Zinc scale inversion ──
+     All CRM text uses text-zinc-{n} targeting dark bg.
+     Flipping the scale makes them work on light bg without touching any component. */
+  --color-zinc-50:  oklch(0.145 0 0);
+  --color-zinc-100: oklch(0.21  0 0);
+  --color-zinc-200: oklch(0.274 0 0);
+  --color-zinc-300: oklch(0.354 0 0);
+  --color-zinc-400: oklch(0.479 0 0);
+  --color-zinc-500: oklch(0.585 0 0);
+  --color-zinc-600: oklch(0.671 0 0);
+  --color-zinc-700: oklch(0.769 0 0);
+  --color-zinc-800: oklch(0.965 0 0);
+  --color-zinc-900: oklch(1    0 0);
+  --color-zinc-950: oklch(1    0 0);
+  /* Brand: darken light variants so active-nav text is readable on white */
+  --color-brand-200: var(--color-brand-700);
+  --color-brand-300: var(--color-brand-700);
+  /* Insight card icon/text colors: light variants → darker shades for light bg */
+  /* Rouges d'alerte : `text-red-100/200/300/400` visent tous un fond sombre.
+     Sans cette inversion, un bandeau d'annulation ou un message d'erreur
+     s'affiche en rose pâle sur blanc, donc illisible. Les fonds `bg-red-500`
+     et le rouge vif ne sont pas touchés : ils tiennent sur les deux thèmes. */
+  --color-red-100:     oklch(0.30 0.12 25);
+  --color-red-200:     oklch(0.35 0.14 25);
+  --color-red-300:     oklch(0.44 0.17 25);
+  --color-red-400:     oklch(0.52 0.20 25);
+  --color-amber-100:   oklch(0.32 0.08 75);
+  --color-amber-200:   oklch(0.36 0.10 75);
+  --color-amber-300:   oklch(0.48 0.13 72);
+  --color-sky-200:     oklch(0.40 0.10 220);
+  --color-sky-300:     oklch(0.44 0.11 220);
+  --color-emerald-100: oklch(0.32 0.08 155);
+  --color-emerald-200: oklch(0.36 0.10 155);
+}
+
+/* Scrollbars for light CRM */
+.crm-light ::-webkit-scrollbar { width: 10px; height: 10px; }
+.crm-light ::-webkit-scrollbar-track { background: transparent; }
+.crm-light ::-webkit-scrollbar-thumb {
+  background: #d1d5db;
+  border-radius: 9999px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+.crm-light ::-webkit-scrollbar-thumb:hover {
+  background: #9ca3af;
+  background-clip: content-box;
+}
+
+/* Scrollbars sobres pour le CRM dark */
+.dark ::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+.dark ::-webkit-scrollbar-track {
+  background: transparent;
+}
+.dark ::-webkit-scrollbar-thumb {
+  background: #3f3f46;
+  border-radius: 9999px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+.dark ::-webkit-scrollbar-thumb:hover {
+  background: #52525b;
+  background-clip: content-box;
+}
+
+/* Masque la scrollbar native (utilisé par le composant HScroll stylé). */
+.hide-scrollbar {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.hide-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+/* Animation d'apparition pour drawers / modales */
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes slide-in-right {
+  from {
+    transform: translateX(100%);
+  }
+  to {
+    transform: translateX(0);
+  }
+}
+@keyframes slide-in-left {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(0);
+  }
+}
+@keyframes crm-text-flip {
+  from {
+    opacity: 0;
+    transform: translateY(8px) rotateX(-72deg);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) rotateX(0);
+  }
+}
+@keyframes marquee {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(-50%);
+  }
+}
+.animate-fade-in {
+  animation: fade-in 0.15s ease-out;
+}
+.animate-slide-in-right {
+  animation: slide-in-right 0.2s ease-out;
+}
+.animate-slide-in-left {
+  animation: slide-in-left 0.2s ease-out;
+}
+
+@keyframes scan-line {
+  0%, 100% { transform: translateY(-80px); opacity: 0.6; }
+  50% { transform: translateY(80px); opacity: 1; }
+}
+.animate-scan-line {
+  animation: scan-line 1.6s ease-in-out infinite;
+}
+
+/* Transition de page « balayée » : le nouveau contenu glisse vers la gauche
+   (depuis la droite) en fondu — effet premium à chaque changement de page. */
+@keyframes page-sweep-in {
+  0% { transform: translate3d(0, 28px, 0); opacity: 0; }
+  100% { transform: translate3d(0, 0, 0); opacity: 1; }
+}
+.animate-page-sweep {
+  animation: page-sweep-in 0.4s cubic-bezier(0.22, 1, 0.36, 1) both;
+  will-change: transform, opacity;
+}
+@media (prefers-reduced-motion: reduce) {
+  .animate-page-sweep {
+    animation: none;
+  }
+}
+
+/* La barre de navigation balaie aussi ses infos qui changent. */
+@keyframes navbar-sweep-in {
+  0% { transform: translate3d(18px, 0, 0); opacity: 0; }
+  100% { transform: translate3d(0, 0, 0); opacity: 1; }
+}
+.animate-navbar-sweep {
+  animation: navbar-sweep-in 0.3s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* Cartes boutique : on n'effectue le rendu/décodage que des cartes proches du
+   viewport (grosses listes plus rapides à afficher). */
+.cv-auto {
+  content-visibility: auto;
+  contain-intrinsic-size: 420px;
+}
+
+@theme inline {
+  --font-heading: "Inter Variable", var(--font-sans);
+  --font-sans: "Geist", ui-sans-serif, system-ui, -apple-system, "Segoe UI",
+    Roboto, Helvetica, Arial, sans-serif;
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --color-foreground: var(--foreground);
+  --color-background: var(--background);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
+}
+
+:root {
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.145 0 0);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.145 0 0);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.145 0 0);
+  --primary: oklch(0.553 0.195 38.402);
+  --primary-foreground: oklch(0.98 0.016 73.684);
+  --secondary: oklch(0.967 0.001 286.375);
+  --secondary-foreground: oklch(0.21 0.006 285.885);
+  --muted: oklch(0.97 0 0);
+  --muted-foreground: oklch(0.556 0 0);
+  --accent: oklch(0.97 0 0);
+  --accent-foreground: oklch(0.205 0 0);
+  --destructive: oklch(0.577 0.245 27.325);
+  --border: oklch(0.922 0 0);
+  --input: oklch(0.922 0 0);
+  --ring: oklch(0.708 0 0);
+  --chart-1: oklch(0.837 0.128 66.29);
+  --chart-2: oklch(0.705 0.213 47.604);
+  --chart-3: oklch(0.646 0.222 41.116);
+  --chart-4: oklch(0.553 0.195 38.402);
+  --chart-5: oklch(0.47 0.157 37.304);
+  --radius: 0.625rem;
+  --sidebar: oklch(0.985 0 0);
+  --sidebar-foreground: oklch(0.145 0 0);
+  --sidebar-primary: oklch(0.646 0.222 41.116);
+  --sidebar-primary-foreground: oklch(0.98 0.016 73.684);
+  --sidebar-accent: oklch(0.97 0 0);
+  --sidebar-accent-foreground: oklch(0.205 0 0);
+  --sidebar-border: oklch(0.922 0 0);
+  --sidebar-ring: oklch(0.708 0 0);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+  button:not(:disabled), [role="button"]:not(:disabled) {
+    cursor: pointer;
+  }
+  html {
+    @apply font-sans;
+  }
+}
+
+/* >>> AUTH-PORTAL >>> */
+/* ─── Portail d'authentification « Auth Switch » ────────────────────────────
+ *
+ * Bloc CANONIQUE, identique dans toutes les apps de l'écosystème. Édite-le
+ * UNIQUEMENT dans `~/mesoutils/src/index.css`, puis propage-le avec
+ * `bash ~/mesoutils/scripts/sync-auth-portal.sh`.
+ *
+ * Les couleurs viennent des variables `--auth-*`. Par défaut elles se déduisent
+ * de la palette `--color-brand-*` de l'app ; une app qui veut un habillage
+ * particulier (BâtiRe, Klyde) redéfinit ces variables dans son propre `:root`,
+ * en dehors de ce bloc.
+ *
+ * Large (conteneur > 900px) : le formulaire glisse d'un bord à l'autre pendant que le
+ * grand cercle traverse la carte et que les deux panneaux se croisent.
+ *
+ * Étroit (conteneur ≤ 900px) : plus de cercle, plus de panneaux, plus
+ * d'animation — la carte se réduit au formulaire, précédé d'une barre
+ * « Pas de compte ? Je m'inscris » qui bascule d'un formulaire à l'autre
+ * instantanément. Le bandeau de panneaux qui la précédait poussait le
+ * formulaire sous la ligne de flottaison et rejouait, sur un écran de
+ * téléphone, une chorégraphie pensée pour un grand écran.
+ */
+.auth-switch-page {
+  /* Requête de conteneur, pas de media query : le portail est parfois monté
+     dans une colonne étroite (la boutique Recycapp le met dans une carte de
+     600px) où la largeur du viewport ne dit rien de la place disponible. */
+  container-type: inline-size;
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: clamp(1rem, 3vw, 2rem) clamp(.75rem, 2vw, 1rem);
+  background: var(--auth-page-bg, linear-gradient(135deg, var(--color-brand-50), var(--color-brand-100)));
+  /* `overflow-x` seulement : `overflow: hidden` empêchait de faire défiler la
+     carte sur les écrans moins hauts qu'elle. */
+  overflow-x: hidden;
+}
+.auth-switch-container {
+  position: relative;
+  width: min(100%, 1100px);
+  height: max(700px, var(--auth-content-height, 700px));
+  overflow: hidden;
+  border-radius: 1.5rem;
+  background: var(--auth-card-bg, #fff);
+  box-shadow: 0 25px 50px var(--auth-shadow, rgb(15 23 20 / 22%));
+}
+.auth-switch-container::before {
+  content: "";
+  position: absolute;
+  z-index: 6;
+  top: -10%;
+  right: 48%;
+  width: 2000px;
+  height: 2000px;
+  border-radius: 50%;
+  background: var(--auth-circle, linear-gradient(-45deg, var(--color-brand-600), var(--color-brand-900)));
+  transform: translateY(-50%);
+  transition: 1.8s ease-in-out;
+}
+.auth-switch-form {
+  position: absolute;
+  z-index: 5;
+  top: 50%;
+  left: 75%;
+  width: 50%;
+  /* Marges élastiques : entre 900 et 1100px, les 4.5rem fixes ne laissaient
+     presque plus de place aux champs. */
+  padding: 2.5rem clamp(1.5rem, 4vw, 4.5rem);
+  transform: translate(-50%, -50%);
+  transition: left 1s .7s ease-in-out;
+}
+/* Barre de bascule des écrans étroits : masquée tant que la carte est large. */
+.auth-switch-compact { display: none; }
+.auth-switch-panels {
+  position: absolute;
+  z-index: 7;
+  inset: 0;
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  pointer-events: none;
+}
+.auth-switch-panel {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  justify-content: space-around;
+  text-align: center;
+  color: white;
+}
+.auth-switch-panel-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1.25rem;
+  transition: transform .9s ease-in-out;
+  transition-delay: .6s;
+}
+.left-panel { padding: 3rem 17% 2rem 12%; pointer-events: all; }
+.right-panel { padding: 3rem 12% 2rem 17%; pointer-events: none; }
+.right-panel .auth-switch-panel-content { transform: translateX(800px); }
+.auth-switch-panel h2, .auth-switch-panel p { margin: 0; }
+.auth-switch-panel h2 { font-size: 2rem; font-weight: 800; }
+.auth-switch-panel p { max-width: 22rem; line-height: 1.55; }
+.auth-switch-panel button {
+  border: 1px solid rgb(255 255 255 / .8);
+  border-radius: 999px;
+  padding: .75rem 1.4rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  transition: background .2s, color .2s;
+}
+.auth-switch-panel button:hover { background: white; color: var(--auth-accent, var(--color-brand-700)); }
+.auth-switch-back-link {
+  display: inline-flex;
+  align-items: center;
+  gap: .45rem;
+  font-size: .875rem;
+  font-weight: 600;
+  color: rgb(255 255 255 / .92);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.auth-switch-back-link:hover { color: white; }
+.sign-up-mode::before { right: 52%; transform: translate(100%, -50%); }
+.sign-up-mode .auth-switch-form { left: 25%; }
+.sign-up-mode .left-panel .auth-switch-panel-content { transform: translateX(-800px); }
+.sign-up-mode .right-panel .auth-switch-panel-content { transform: translateX(0); }
+.sign-up-mode .left-panel { pointer-events: none; }
+.sign-up-mode .right-panel { pointer-events: all; }
+
+@container (max-width: 900px) {
+  /* Colonne, hauteur libre : le formulaire d'inscription, plus haut que celui
+     de connexion, ne peut plus être coupé par une carte figée. */
+  .auth-switch-container { display: flex; flex-direction: column; height: auto; }
+  .auth-switch-container::before { content: none; }
+  /* Les panneaux qui se croisent sont remplacés par la barre compacte. */
+  .auth-switch-panels { display: none; }
+  .auth-switch-compact {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: .75rem 1rem;
+    margin-bottom: 1.5rem;
+    font-size: .875rem;
+    color: #52525b;
+  }
+  /* La bascule se cale à droite, le retour à l'accueil restant à gauche. */
+  .auth-switch-compact p { margin: 0 0 0 auto; }
+  .auth-switch-compact p button {
+    font-weight: 700;
+    color: var(--auth-accent, var(--color-brand-700));
+    text-decoration: underline;
+    text-underline-offset: 3px;
+  }
+  /* Le lien de retour vivait sur le panneau coloré : ici, fond clair. */
+  .auth-switch-compact .auth-switch-back-link {
+    color: var(--auth-accent, var(--color-brand-700));
+  }
+  .auth-switch-form {
+    position: relative;
+    z-index: 8;
+    top: auto;
+    left: auto;
+    width: 100%;
+    padding: 2rem 1.5rem 2.5rem;
+    transform: none;
+    transition: none;
+  }
+  .sign-up-mode .auth-switch-form { left: auto; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .auth-switch-container::before, .auth-switch-form, .auth-switch-panel-content {
+    transition: none;
+  }
+}
+/* <<< AUTH-PORTAL <<< */
+
+/* >>> CLICKABLE-CURSOR >>> */
+/* ─── Curseur des éléments cliquables ────────────────────────────────────────
+ *
+ * Bloc identique dans toutes les apps de l'écosystème.
+ *
+ * Tailwind v4 a retiré le `cursor: pointer` que la v3 posait sur les boutons :
+ * survoler un bouton laissait la flèche par défaut, et l'interface paraissait
+ * inerte. On le rétablit pour tout ce qui se clique — y compris ce qui n'est
+ * pas un bouton mais en joue le rôle (`role="button"`) — et on marque ce qui
+ * est désactivé.
+ *
+ * Les sélecteurs restent volontairement de faible spécificité : une classe
+ * utilitaire (`cursor-default`, `cursor-grab`…) l'emporte toujours.
+ */
+button,
+[role="button"],
+[role="tab"],
+[role="option"],
+[role="menuitem"],
+[role="menuitemcheckbox"],
+[role="menuitemradio"],
+[role="checkbox"],
+[role="radio"],
+[role="switch"],
+a[href],
+summary,
+select,
+input[type="checkbox"],
+input[type="radio"],
+input[type="file"],
+input[type="submit"],
+input[type="button"],
+input[type="reset"],
+input[type="color"],
+input[type="range"] {
+  cursor: pointer;
+}
+
+/* Un label qui enveloppe sa case ou son bouton radio se clique aussi. Les
+   labels de champs texte, eux, gardent le curseur d'écriture. */
+label:has(> input[type="checkbox"]),
+label:has(> input[type="radio"]),
+label:has(> span > input[type="checkbox"]),
+label:has(> span > input[type="radio"]) {
+  cursor: pointer;
+}
+
+/* Rien à cliquer sur un élément désactivé : le curseur doit le dire. */
+button:disabled,
+select:disabled,
+input:disabled,
+[aria-disabled="true"] {
+  cursor: not-allowed;
+}
+/* <<< CLICKABLE-CURSOR <<< */

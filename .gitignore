@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.env.local
+.env*.local
+*.tsbuildinfo
+.vercel/
+.vercel
+.env*
+
+!.env.example
+.playwright-cli/
+output/
