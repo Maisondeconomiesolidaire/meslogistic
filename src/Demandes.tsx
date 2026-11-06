@@ -11,7 +11,7 @@ import { Select } from "./components/ui/Field";
 import { FullSpinner } from "./components/ui/Spinner";
 import { EmptyState } from "./components/ui/EmptyState";
 import { RequestDetail, NewRequest } from "./RequestDetail";
-export type Request = Doc<"mlRequests">;
+export type Request = Doc<"mlRequests"> & { payment?: { method: "cash" | "bank_transfer"; paid: boolean; canConfirm: boolean } | null };
 export const stages = [{ key: "a_preparer", label: "À préparer", color: "#317fa0" }, { key: "en_transit", label: "En transit", color: "#b57426" }, { key: "receptionnee", label: "Réceptionnées", color: "#196b24" }] as const;
 export const date = (value: number) => new Date(value).toLocaleDateString("fr-FR");
 export function Demandes({ canCreate, canUpdate }: { canCreate: boolean; canUpdate: boolean }) {

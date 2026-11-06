@@ -874,6 +874,7 @@ async function insertOrder(
     channel: Doc<"btOrders">["channel"];
     pickupLocation?: Doc<"btOrders">["pickupLocation"];
     pickupFeeCents?: number;
+    paymentMethod?: Doc<"btOrders">["paymentMethod"];
     purchaseReference?: string;
     pickupReference?: string;
     userId?: string;
@@ -903,6 +904,7 @@ async function insertOrder(
     reference,
     purchaseReference: args.purchaseReference,
     pickupReference: args.pickupReference,
+    paymentMethod: args.paymentMethod,
     materialId: args.materialId,
     materialTitle: material.title,
     logisticsSourceDepot: material.depot,
@@ -951,12 +953,17 @@ export const reserveMaterial = mutation({
     pickupLocation: pickupLocationValidator,
   },
   handler: async (ctx, args): Promise<{ reference: string }> => {
+    const identity = await requireUser(ctx);
+    const profile = await ctx.db.query("btDonorProfiles").withIndex("by_clerkId", q => q.eq("clerkId", identity.subject)).unique();
+    if (!profile?.customerType || profile.customerType === "particulier") throw new ConvexError("Le paiement au retrait est réservé aux professionnels et collectivités. Ajoutez le matériau au panier pour payer par carte.");
+    const material = await ctx.db.get(args.materialId);
+    const source = storageLocationId(material?.depot);
+    if (!source) throw new ConvexError("Le dépôt de stockage doit être confirmé par l’équipe.");
     const email = args.customer.email.trim().toLowerCase();
     if (!/^\S+@\S+\.\S+$/.test(email)) throw new ConvexError("Adresse email invalide.");
     if (!args.customer.firstName.trim() || !args.customer.lastName.trim()) {
       throw new ConvexError("Indiquez votre prénom et votre nom.");
     }
-    const identity = await ctx.auth.getUserIdentity();
     const order = await insertOrder(
       ctx,
       {
@@ -965,7 +972,9 @@ export const reserveMaterial = mutation({
         customer: { ...args.customer, email },
         channel: "boutique",
         pickupLocation: args.pickupLocation,
-        userId: identity?.subject,
+        userId: identity.subject,
+        paymentMethod: "cash",
+        pickupFeeCents: source !== args.pickupLocation ? PICKUP_TRANSFER_FEE_CENTS : 0,
       },
       "reservee",
     );
@@ -1241,6 +1250,55 @@ export const startCartCheckout = action({
   },
 });
 
+/** Demande de paiement différé : contrôles et création des lignes dans une même transaction. */
+export const requestOfflineCart = mutation({
+  args: {
+    items: v.array(v.object({ materialId: v.id("btMaterials"), quantity: v.number(), pickupLocation: pickupLocationValidator })),
+    customer: customerValidator,
+    paymentMethod: v.union(v.literal("cash"), v.literal("bank_transfer")),
+  },
+  handler: async (ctx, args) => {
+    const identity = await requireUser(ctx);
+    const profile = await ctx.db.query("btDonorProfiles").withIndex("by_clerkId", q => q.eq("clerkId", identity.subject)).unique();
+    const customerType = profile?.customerType ?? "particulier";
+    if (customerType === "particulier" || (args.paymentMethod === "bank_transfer" && customerType !== "collectivite")) throw new ConvexError("Ce moyen de paiement n’est pas disponible pour votre type de client.");
+    const email = args.customer.email.trim().toLowerCase();
+    if (!/^\S+@\S+\.\S+$/.test(email) || !args.customer.firstName.trim() || !args.customer.lastName.trim()) throw new ConvexError("Indiquez vos coordonnées complètes.");
+    if (!args.items.length || args.items.length > 50 || new Set(args.items.map(item => item.materialId)).size !== args.items.length) throw new ConvexError("Panier invalide.");
+    const reference = await nextOrderReference(ctx);
+    let provider: "recycapp" | "bennespro" | undefined;
+    let feeCharged = false;
+    let amountCents = 0;
+    for (const [index, item] of args.items.entries()) {
+      const material = await ctx.db.get(item.materialId);
+      if (!material || !Number.isFinite(item.quantity) || item.quantity <= 0) throw new ConvexError("Matériau ou quantité invalide.");
+      const itemProvider = stripeProviderForCategory(material.category);
+      if (provider && provider !== itemProvider) throw new ConvexError("Votre panier contient des articles de vendeurs différents.");
+      provider = itemProvider;
+      const source = storageLocationId(material.depot);
+      if (!source) throw new ConvexError(`Le dépôt de stockage de « ${material.title} » doit être confirmé par l’équipe.`);
+      const fee: number = source !== item.pickupLocation && !feeCharged ? PICKUP_TRANSFER_FEE_CENTS : 0;
+      const suffix = index < 26 ? String.fromCharCode(65 + index) : `A${String.fromCharCode(65 + index - 26)}`;
+      const order = await insertOrder(ctx, { ...item, customer: { ...args.customer, email }, userId: identity.subject, channel: "boutique", pickupFeeCents: fee, purchaseReference: reference, pickupReference: `${reference}-${suffix}`, paymentMethod: args.paymentMethod }, "reservee");
+      amountCents += order.amountCents;
+      feeCharged ||= fee > 0;
+    }
+    await ctx.scheduler.runAfter(0, internal.batireEmails.sendOfflineCartConfirmation, { to: email, reference, paymentMethod: args.paymentMethod, amountCents });
+    return { reference };
+  },
+});
+
+/** Confirmation par l'équipe uniquement après réception effective du paiement. */
+export const confirmOfflinePayment = mutation({
+  args: { orderId: v.id("btOrders") },
+  handler: async (ctx, { orderId }) => {
+    await requireCrmPermission(ctx, PAGE_DEMANDES, "update");
+    const order = await ctx.db.get(orderId);
+    if (!order || !order.paymentMethod || order.paymentMethod === "card" || !["reservee", "en_attente"].includes(order.status)) throw new ConvexError("Paiement différé introuvable ou déjà enregistré.");
+    await ctx.runMutation(internal.batire.markOrderPaid, { orderId });
+  },
+});
+
 export const ordersByStripeSession = internalQuery({
   args: { stripeSessionId: v.string() },
   handler: async (ctx, { stripeSessionId }) => await ctx.db.query("btOrders").withIndex("by_stripeSession", (q) => q.eq("stripeSessionId", stripeSessionId)).collect(),
@@ -1309,6 +1367,17 @@ export const updateRequestOutcome = mutation({
   handler: async (ctx, args) => {
     await requireCrmPermission(ctx, PAGE_DEMANDES, "update");
     await ctx.db.patch(args.id, { outcome: args.outcome, updatedAt: Date.now() });
+  },
+});
+
+/** Le suivi d'un article ne modifie pas les autres lignes ni le statut global. */
+export const updateRequestItemOutcome = mutation({
+  args: { id: v.id("btRequests"), index: v.number(), outcome: v.union(v.literal("nouveau"), v.literal("en_cours"), v.literal("gagnee"), v.literal("perdue")) },
+  handler: async (ctx, { id, index, outcome }) => {
+    await requireCrmPermission(ctx, PAGE_DEMANDES, "update");
+    const request = await ctx.db.get(id);
+    if (!request || !Number.isInteger(index) || index < 0 || index >= request.items.length) throw new ConvexError("Article introuvable dans cette demande.");
+    await ctx.db.patch(id, { items: request.items.map((item, itemIndex) => itemIndex === index ? { ...item, outcome } : item), updatedAt: Date.now() });
   },
 });
 
@@ -3218,7 +3287,7 @@ export const migrateConditionsToLeboncoin = internalMutation({
 
 async function pickupTracking(ctx: QueryCtx | MutationCtx, order: Doc<"btOrders">) {
   const transfer = await ctx.db.query("mlRequests").withIndex("by_orderId", q => q.eq("orderId", order._id)).first();
-  const status = order.status === "annulee" ? "cancelled" : order.status === "en_attente" ? "payment" : order.collectedAt ? "collected" : order.readyAt ? "ready" : transfer?.status === "annulee" ? "incident" : transfer?.status === "receptionnee" ? "preparing" : transfer?.status === "en_transit" ? "transit" : transfer ? (transfer.shuttleId && transfer.scheduledDate ? "scheduled" : "waiting") : "preparing";
+  const status = order.status === "annulee" ? "cancelled" : order.status === "en_attente" ? "payment" : order.collectedAt ? "collected" : order.readyAt ? "ready" : transfer?.status === "annulee" ? "incident" : transfer?.status === "receptionnee" ? "preparing" : transfer?.status === "en_transit" ? "transit" : transfer ? (transfer.scheduledDate ? "scheduled" : "waiting") : "preparing";
   return { status, scheduledDate: transfer?.scheduledDate, receivedQuantity: transfer?.receivedQuantity, receivedAt: transfer?.receivedAt };
 }
 
@@ -3227,7 +3296,7 @@ export const pickupOperations = query({
     await requireCrmPermission(ctx, PAGE_DEMANDES, "read");
     const orders = await ctx.db.query("btOrders").order("desc").take(300);
     return {
-      orders: (await Promise.all(orders.filter(o => o.pickupLocation && ["payee", "reservee"].includes(o.status)).map(async order => ({ ...order, fulfillment: await pickupTracking(ctx, order) })))).filter(order => ["preparing", "ready", "collected"].includes(order.fulfillment.status)),
+      orders: await Promise.all(orders.filter(o => o.pickupLocation && (["payee", "reservee"].includes(o.status) || (o.status === "en_attente" && o.paymentMethod === "bank_transfer"))).map(async order => ({ ...order, fulfillment: await pickupTracking(ctx, order) }))),
     };
   },
 });
@@ -3276,6 +3345,7 @@ export const updatePickup = mutation({
       await ctx.scheduler.runAfter(0, internal.batireEmails.sendPickupReady, { to: order.customer.email, reference: order.pickupReference ?? order.reference, title: order.materialTitle, quantity: order.quantity, unit: order.unit, location: pickupLocations[order.pickupLocation], hours: args.pickupHours.trim() });
     } else {
       if (!order.readyAt) throw new ConvexError("Confirmez d’abord que le lot est prêt.");
+      if ((order.paymentMethod === "cash" || order.paymentMethod === "bank_transfer") && order.status !== "payee") throw new ConvexError("Enregistrez le paiement avant la remise.");
       await ctx.db.patch(order._id, { collectedAt: now });
     }
   },
