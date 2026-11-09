@@ -7,6 +7,7 @@ import { api } from "../convex/_generated/api";
 import { AuthSwitch } from "./components/ui/auth-switch";
 import { FullSpinner } from "./components/ui/Spinner";
 import { Demandes } from "./Demandes";
+import { Navettes } from "./Navettes";
 export default function App() {
   const location = useLocation();
   const auth = location.pathname === "/connexion" || location.pathname === "/inscription";
@@ -15,6 +16,7 @@ export default function App() {
 }
 function Workspace() {
   const { user } = useUser();
+  const location = useLocation();
   const { isAuthenticated, isLoading } = useConvexAuth();
   const access = useQuery(api.permissions.myAccess, isAuthenticated ? {} : "skip");
   const [light, setLight] = useState(() => localStorage.getItem("meslogistic-theme") === "light");
@@ -29,6 +31,6 @@ function Workspace() {
   const can = (action: string) => access.isAdmin || access.bootstrapMode || (access.isStaff && access.grants.some(g => g.pageKey === "meslogistic:demandes" && g.actions.includes(action)));
   const account = <div className="flex items-center gap-3 rounded-lg bg-[var(--crm-surface-2)] px-3 py-2"><UserButton appearance={{ elements: { avatarBox: "h-9 w-9" } }} /><div className="min-w-0"><p className="truncate text-sm font-medium">{user?.fullName ?? user?.primaryEmailAddress?.emailAddress}</p><p className="truncate text-xs text-zinc-500">{user?.primaryEmailAddress?.emailAddress}</p></div></div>;
   return <CrmShell isDark={!light} onToggleTheme={() => { localStorage.setItem("meslogistic-theme", light ? "dark" : "light"); setLight(!light); }} account={account}>
-    {can("read") ? <Demandes canCreate={can("create")} canUpdate={can("update")} /> : <div className="p-10"><h1 className="text-xl font-bold">Accès aux demandes requis</h1><p className="mt-3 text-zinc-500">Votre administrateur peut vous attribuer les droits Meslogistic depuis Mes Outils.</p><a className="mt-4 inline-block text-brand-500" href="https://mesoutils.groupemes.fr">Ouvrir Mes Outils</a></div>}
+    {can("read") ? (location.pathname === "/navettes" ? <Navettes canCreate={can("create")} canUpdate={can("update")} /> : <Demandes canCreate={can("create")} canUpdate={can("update")} />) : <div className="p-10"><h1 className="text-xl font-bold">Accès aux demandes requis</h1><p className="mt-3 text-zinc-500">Votre administrateur peut vous attribuer les droits Meslogistic depuis Mes Outils.</p><a className="mt-4 inline-block text-brand-500" href="https://mesoutils.groupemes.fr">Ouvrir Mes Outils</a></div>}
   </CrmShell>;
 }

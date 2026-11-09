@@ -8,7 +8,6 @@ import type { Request } from "./Demandes";
 export function ProcessSteps({ request, canUpdate, onScheduled }: { request: Request; canUpdate: boolean; onScheduled: (date: string, version: number) => void }) {
   const schedule = useMutation(api.meslogistic.schedule);
   const advance = useMutation(api.meslogistic.advance);
-  const confirmPayment = useMutation(api.batire.confirmOfflinePayment);
   const [date, setDate] = useState(request.scheduledDate ?? "");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -33,7 +32,6 @@ export function ProcessSteps({ request, canUpdate, onScheduled }: { request: Req
     { label: "Date programmée", done: planned, disabled: blocked || request.status !== "a_preparer", action: () => { setError(""); setDate(request.scheduledDate ?? ""); setDateOpen(true); }, content: <p className="mt-2 text-xs text-zinc-500">{request.scheduledDate ? new Date(`${request.scheduledDate}T12:00:00`).toLocaleDateString("fr-FR") : "Choisir une date"}</p> },
     { label: "En transit", done: transit, disabled: blocked || !planned || request.status !== "a_preparer" || Boolean(request.orderId && !request.shuttleId), action: () => run(async () => { await advance({ id: request._id, step: "en_transit", expectedUpdatedAt: request.updatedAt }); }), content: request.orderId && !request.shuttleId ? <p className="mt-2 text-xs text-zinc-500">Affectez une navette avant le départ.</p> : null },
     { label: "Disponible à destination", done: received, disabled: blocked || request.status !== "en_transit", action: () => run(async () => { await advance({ id: request._id, step: "receptionnee", expectedUpdatedAt: request.updatedAt }); }), content: <p className="mt-2 text-xs text-zinc-500">Confirme la réception de la totalité du lot.</p> },
-    ...(request.payment && request.orderId ? [{ label: "Payé", done: request.payment.paid, disabled: blocked || !received || request.payment.paid || !request.payment.canConfirm, action: () => run(async () => { await confirmPayment({ orderId: request.orderId! }); }), content: <p className="mt-2 text-xs text-zinc-500">{request.payment.method === "cash" ? "Espèces" : "Virement"}{!request.payment.canConfirm ? " · Droit d’encaissement Bâtire requis" : ""}</p> }] : []),
   ];
   const done = steps.filter(step => step.done).length;
   return <section className="space-y-4"><h3 className="font-semibold">Process</h3>
