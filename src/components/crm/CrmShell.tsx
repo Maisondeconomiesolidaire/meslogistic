@@ -1,17 +1,37 @@
-import { useState, type ReactNode } from "react";
-import { NavLink } from "react-router-dom";
+import { useEffect, useState, type ReactNode } from "react";
+import { NavLink, useLocation } from "react-router-dom";
 import { useQuery } from "convex/react";
 import { api } from "../../../convex/_generated/api";
 import { Bus, ClipboardList, Menu, Moon, Store, Sun } from "lucide-react";
 import { Drawer } from "../ui/Drawer";
 
 /** Recycapp layout, with navigation specific to Meslogistic. */
-export function CrmShell({ isDark, onToggleTheme, account, children }: {
-  isDark: boolean; onToggleTheme: () => void; account: ReactNode; children: ReactNode;
+const SEEN_KEY = "meslogistic:demandes-seen-at";
+function readSeen() {
+  try { const value = Number(localStorage.getItem(SEEN_KEY)); return Number.isFinite(value) && value > 0 ? value : null; } catch { return null; }
+}
+function writeSeen(value: number) {
+  try { localStorage.setItem(SEEN_KEY, String(value)); } catch { /* préférence locale facultative */ }
+}
+
+export function CrmShell({ isDark, onToggleTheme, account, canRead, children }: {
+  isDark: boolean; onToggleTheme: () => void; account: ReactNode; canRead: boolean; children: ReactNode;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
-  // Demandes nouvelles sans navette : même pastille que le CRM Recycapp.
-  const pending = useQuery(api.meslogistic.badgeCount, {});
+  // Pastille comme dans le CRM Recycapp : nouvelles demandes arrivées depuis la
+  // dernière visite de la page Demandes. Elle disparaît et se remet à zéro dès
+  // que la page est ouverte.
+  const { pathname } = useLocation();
+  const onDemandes = pathname === "/";
+  const requests = useQuery(api.meslogistic.list, canRead ? {} : "skip");
+  const [seenAt, setSeenAt] = useState<number>(() => { const saved = readSeen(); if (saved) return saved; const now = Date.now(); writeSeen(now); return now; });
+  useEffect(() => {
+    if (!onDemandes) return;
+    const latest = Math.max(Date.now(), ...(requests ?? []).map(request => request.createdAt));
+    writeSeen(latest);
+    setSeenAt(latest);
+  }, [onDemandes, requests]);
+  const pending = onDemandes ? 0 : (requests ?? []).filter(request => request.createdAt > seenAt && request.status !== "annulee").length;
   const brand = <a href="/" className="flex min-w-0 items-center text-lg font-bold tracking-tight" aria-label="Meslogistic — accueil">Meslogistic</a>;
   const links = [{ to: "/", label: "Demandes", icon: ClipboardList }, { to: "/navettes", label: "Navettes", icon: Bus }];
   const navigation = <>{links.map(({ to, label, icon: Icon }) => <NavLink key={to} to={to} end onClick={() => setMenuOpen(false)} className={({ isActive }) => `grid grid-cols-[20px_minmax(0,1fr)_auto] items-center gap-3 rounded-lg border-l-2 px-3 py-2.5 text-sm font-medium transition-colors ${isActive ? "border-brand-500 bg-brand-600/15 text-brand-300" : "border-transparent text-zinc-400 hover:bg-[var(--crm-surface-2)] hover:text-zinc-100"}`}><Icon className="h-5 w-5 shrink-0 justify-self-center" /><span className="min-w-0 truncate">{label}</span>{to === "/" && (pending ?? 0) > 0 ? <span aria-label={`${pending} nouvelle${pending! > 1 ? "s" : ""} demande${pending! > 1 ? "s" : ""}`} className="rounded-full bg-brand-500 px-2 py-0.5 text-[11px] font-semibold text-white shadow-[0_0_0_1px_rgba(255,255,255,0.06)]">{pending}</span> : null}</NavLink>)}</>;
