@@ -20,6 +20,12 @@ export function sortShuttles<T extends { scheduledDate: string }>(shuttles: T[])
   });
 }
 
+/** Navettes proposées à l’affectation : à venir uniquement (+ celle déjà affectée). */
+export function assignableShuttles<T extends { _id: string; scheduledDate: string }>(shuttles: T[], currentId?: string) {
+  const now = today();
+  return sortShuttles(shuttles.filter(shuttle => shuttle.scheduledDate >= now || shuttle._id === currentId));
+}
+
 /**
  * Affectation du transit à une navette. Chaque navette existante affiche
  * l’aperçu des transits qu’elle transporte déjà, pour regrouper les trajets.
@@ -48,8 +54,8 @@ export function TransferPlanning({ request, canUpdate, onAssigned }: { request: 
       {request.shuttleId && editable && <Button size="sm" variant="ghost" disabled={busy} onClick={() => void choose(null)}>Retirer</Button>}
     </div>
     {shuttles === undefined ? <p className="text-sm text-zinc-500">Chargement des navettes…</p>
-      : shuttles.length === 0 ? <p className="rounded-xl bg-[var(--crm-surface-2)] p-3 text-sm text-zinc-500">Aucune navette. Créez-en une depuis la page <Link className="font-semibold text-brand-500" to="/navettes">Navettes</Link>.</p>
-      : <ul className="max-h-[420px] space-y-2 overflow-y-auto pr-1">{sortShuttles(shuttles).map(shuttle => {
+      : assignableShuttles(shuttles, request.shuttleId).length === 0 ? <p className="rounded-xl bg-[var(--crm-surface-2)] p-3 text-sm text-zinc-500">Aucune navette à venir. Créez-en une depuis la page <Link className="font-semibold text-brand-500" to="/navettes">Navettes</Link>.</p>
+      : <ul className="max-h-[420px] space-y-2 overflow-y-auto pr-1">{assignableShuttles(shuttles, request.shuttleId).map(shuttle => {
         const current = request.shuttleId === shuttle._id;
         const others = shuttle.transits.filter(transit => transit._id !== request._id);
         return <li key={shuttle._id} className={`rounded-xl border p-3 ${current ? "border-brand-500 bg-brand-500/10" : "border-[var(--crm-border)] bg-[var(--crm-surface-2)]"}`}>

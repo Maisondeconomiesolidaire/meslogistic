@@ -6,7 +6,7 @@ import type { Id } from "../convex/_generated/dataModel";
 import { Input } from "./components/ui/Field";
 import { shortDate } from "./components/crm/LogisticsCard";
 import { shortLocation, type Request } from "./Demandes";
-import { sortShuttles, today } from "./TransferPlanning";
+import { assignableShuttles, today } from "./TransferPlanning";
 
 export function ProcessSteps({ request, canUpdate, onScheduled }: { request: Request; canUpdate: boolean; onScheduled: (date: string, version: number) => void }) {
   const advance = useMutation(api.meslogistic.advance);
@@ -63,8 +63,8 @@ export function ProcessSteps({ request, canUpdate, onScheduled }: { request: Req
     {pickerOpen && <dialog ref={dialog} aria-labelledby="shuttle-title" onCancel={event => { event.preventDefault(); setPickerOpen(false); }} onKeyDown={event => { if (event.key === "Escape") event.stopPropagation(); }} className="m-auto w-[min(34rem,calc(100%-2rem))] rounded-3xl border border-[var(--crm-border)] bg-[var(--crm-surface)] p-6 text-[var(--foreground)] shadow-2xl backdrop:bg-black/70">
       <div className="space-y-4">
         <div><h3 id="shuttle-title" className="text-lg font-bold">Assigner une navette</h3><p className="mt-1 text-sm text-zinc-500">{shortLocation(request.origin)} → {shortLocation(request.destination)}{request.dueDate ? ` · échéance ${shortDate(request.dueDate)}` : ""}. La date de départ devient celle de la navette.</p></div>
-        {shuttles === undefined ? <p className="text-sm text-zinc-500">Chargement des navettes…</p> : shuttles.length === 0 ? <p className="rounded-xl bg-[var(--crm-surface-2)] p-3 text-sm text-zinc-500">Aucune navette : créez-en une ci-dessous.</p> :
-          <ul className="max-h-[45vh] space-y-2 overflow-y-auto pr-1">{sortShuttles(shuttles).map(shuttle => {
+        {shuttles === undefined ? <p className="text-sm text-zinc-500">Chargement des navettes…</p> : assignableShuttles(shuttles, request.shuttleId).length === 0 ? <p className="rounded-xl bg-[var(--crm-surface-2)] p-3 text-sm text-zinc-500">Aucune navette à venir : créez-en une ci-dessous.</p> :
+          <ul className="max-h-[45vh] space-y-2 overflow-y-auto pr-1">{assignableShuttles(shuttles, request.shuttleId).map(shuttle => {
             const selected = shuttle._id === request.shuttleId;
             const late = Boolean(request.dueDate && shuttle.scheduledDate > request.dueDate);
             return <li key={shuttle._id} className={`flex items-center justify-between gap-3 rounded-xl border p-3 ${selected ? "border-brand-500 bg-brand-500/10" : "border-[var(--crm-border)] bg-[var(--crm-surface-2)]"}`}>
@@ -75,7 +75,7 @@ export function ProcessSteps({ request, canUpdate, onScheduled }: { request: Req
           })}</ul>}
         <form onSubmit={submitNew} className="space-y-2 rounded-xl border border-dashed border-[var(--crm-border)] p-3">
           <p className="text-sm font-semibold">Nouvelle navette</p>
-          <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_160px]"><Input required maxLength={100} placeholder="Nom (ex. Tournée mardi)" value={newName} onChange={event => setNewName(event.target.value)} /><Input required type="date" aria-label="Date de la navette" value={newDate} onChange={event => setNewDate(event.target.value)} /></div>
+          <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_160px]"><Input required maxLength={100} placeholder="Nom (ex. Tournée mardi)" value={newName} onChange={event => setNewName(event.target.value)} /><Input required type="date" min={today()} aria-label="Date de la navette" value={newDate} onChange={event => setNewDate(event.target.value)} /></div>
           <button type="submit" disabled={busy || !newName.trim() || !newDate} className="inline-flex items-center gap-1.5 rounded-xl border border-[var(--crm-border)] px-3 py-1.5 text-xs font-semibold disabled:opacity-50"><Plus size={14} />Créer et assigner</button>
         </form>
         {error && <p role="alert" className="text-sm text-red-500">{error}</p>}
