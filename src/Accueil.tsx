@@ -1,10 +1,11 @@
 import { useCallback, useMemo, useState, type DragEvent, type ReactNode } from "react";
 import { useMutation, useQuery } from "convex/react";
-import { AlertTriangle, ArrowLeft, ArrowRight, Bus, CalendarClock, Check, ChevronLeft, ChevronRight, ClipboardCheck, ExternalLink, GripVertical, MapPin, PackageCheck, Plus, Printer, Search, Trash2, Truck, X } from "lucide-react";
+import { AlertTriangle, ArrowLeft, ArrowRight, Bus, CalendarClock, Check, ChevronLeft, ChevronRight, ClipboardCheck, ExternalLink, GripVertical, MapPin, PackageCheck, Plus, Printer, Search, Trash2, Truck, Undo2, X } from "lucide-react";
 import { api } from "../convex/_generated/api";
 import type { Id } from "../convex/_generated/dataModel";
 import { Thumb, TRANSIT_COLOR, shortDate } from "./components/crm/LogisticsCard";
 import { Button } from "./components/ui/Button";
+import { Drawer } from "./components/ui/Drawer";
 import { FullSpinner } from "./components/ui/Spinner";
 import { shortLocation, statusLabel, type Request } from "./Demandes";
 import { ArticlePreview, RequestDetail } from "./RequestDetail";
@@ -249,7 +250,9 @@ function ShuttleInline({ shuttle, canUpdate, dragging, dropActive, dropProps, on
   const depart = useMutation(api.meslogisticShuttles.departShuttle);
   const deliver = useMutation(api.meslogisticShuttles.deliverShuttle);
   const deleteShuttle = useMutation(api.meslogisticShuttles.deleteShuttle);
+  const cancelDeparture = useMutation(api.meslogisticShuttles.cancelDeparture);
   const [busy, setBusy] = useState(false);
+  const [confirm, setConfirm] = useState<Confirm | null>(null);
   const planned = shuttle.status === "planifiee";
   const loaded = shuttle.transits.filter(row => row.loadedAt).length;
   const total = shuttle.transits.length;
@@ -258,11 +261,32 @@ function ShuttleInline({ shuttle, canUpdate, dragging, dropActive, dropProps, on
     try { await action(); } catch (caught) { onError(errorText(caught)); } finally { setBusy(false); }
   }
   let actions: ReactNode = null;
+  const loadedRows = shuttle.transits.filter(row => row.loadedAt);
+  const leftRows = shuttle.transits.filter(row => !row.loadedAt);
   if (canUpdate && planned) actions = <>
-    {total > 0 && loaded < total && <Button size="sm" variant="secondary" disabled={busy} onClick={() => { if (window.confirm(`Confirmer que les ${total} objets sont chargés dans « ${shuttle.name} » ?`)) void run(() => setLoaded({ shuttleId: shuttle._id, loaded: true })); }}><Check size={14} />Tout est chargé</Button>}
-    <Button size="sm" disabled={busy || loaded === 0} onClick={() => { const left = total - loaded; if (left && !window.confirm(`${objets(left)} non chargé${left > 1 ? "s" : ""} ne partira pas et reviendra « À planifier ». Confirmer le départ ?`)) return; void run(() => depart({ shuttleId: shuttle._id })); }}><Truck size={14} />Départ</Button>
+    {total > 0 && loaded < total && <Button size="sm" variant="secondary" disabled={busy} onClick={() => setConfirm({
+      title: "Les produits ont bien été chargés ?", confirmLabel: "Oui, tout est chargé", icon: <Check size={15} />,
+      body: <><p>Confirmez que les {objets(total)} de « {shuttle.name} » sont bien dans le véhicule.</p><ObjectList rows={shuttle.transits} /></>,
+      action: () => setLoaded({ shuttleId: shuttle._id, loaded: true }),
+    })}><Check size={14} />Tout est chargé</Button>}
+    <Button size="sm" disabled={busy || loaded === 0} onClick={() => setConfirm({
+      title: "Les produits ont bien été chargés ?", confirmLabel: "Oui, départ", icon: <Truck size={15} />,
+      body: <>
+        <p>{objets(loadedRows.length)} chargé{loadedRows.length > 1 ? "s" : ""} partira en transit avec « {shuttle.name} ».</p>
+        <ObjectList rows={loadedRows} />
+        {leftRows.length > 0 && <><p className="mt-3 font-semibold text-amber-500">{objets(leftRows.length)} non chargé{leftRows.length > 1 ? "s" : ""} ne partira pas et reviendra dans la liste à planifier :</p><ObjectList rows={leftRows} /></>}
+      </>,
+      action: () => depart({ shuttleId: shuttle._id }),
+    })}><Truck size={14} />Départ</Button>
   </>;
-  if (canUpdate && shuttle.status === "en_route") actions = <Button size="sm" disabled={busy} onClick={() => void run(() => deliver({ shuttleId: shuttle._id }))}><PackageCheck size={14} />Arrivée</Button>;
+  if (canUpdate && shuttle.status === "en_route") actions = <>
+    <Button size="sm" variant="secondary" disabled={busy} onClick={() => setConfirm({
+      title: "Annuler le transit ?", confirmLabel: "Annuler le transit", icon: <Undo2 size={15} />, danger: true,
+      body: <p>« {shuttle.name} » redevient « Nouveau » : ses objets ne sont plus en transit mais restent chargés dans la navette. Vous pourrez la relancer avec « Départ ».</p>,
+      action: () => cancelDeparture({ shuttleId: shuttle._id }),
+    })}><Undo2 size={14} />Annuler le transit</Button>
+    <Button size="sm" disabled={busy} onClick={() => void run(() => deliver({ shuttleId: shuttle._id }))}><PackageCheck size={14} />Arrivée</Button>
+  </>;
 
   return <div {...dropProps} className={`flex min-h-0 flex-1 flex-col transition-colors ${dropActive ? "bg-brand-500/10" : ""}`}>
     <div className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2 border-b border-[var(--crm-border)] px-4 py-3">
@@ -275,7 +299,11 @@ function ShuttleInline({ shuttle, canUpdate, dragging, dropActive, dropProps, on
       <div className="ml-auto flex flex-wrap gap-2">
         {actions}
         <Button size="sm" variant="secondary" onClick={() => printShuttle(shuttle, navPlan)} title={navPlan ? "Feuille de route : arrêts, heures d’arrivée et objets" : "Itinéraire en cours de calcul : l’impression n’aura pas les heures"}><Printer size={14} />Imprimer</Button>
-        {canUpdate && planned && <Button size="sm" variant="danger" disabled={busy} onClick={() => { if (window.confirm(`Supprimer la navette « ${shuttle.name} » ? Ses demandes reviendront dans la liste à planifier.`)) void run(() => deleteShuttle({ shuttleId: shuttle._id }).then(onBack)); }}><Trash2 size={14} />Supprimer</Button>}
+        {canUpdate && planned && <Button size="sm" variant="danger" disabled={busy} onClick={() => setConfirm({
+          title: "Supprimer la navette ?", confirmLabel: "Supprimer", icon: <Trash2 size={15} />, danger: true,
+          body: <p>« {shuttle.name} » sera supprimée. {total ? `Ses ${objets(total)} reviendront dans la liste à planifier.` : ""}</p>,
+          action: () => deleteShuttle({ shuttleId: shuttle._id }).then(onBack),
+        })}><Trash2 size={14} />Supprimer</Button>}
       </div>
     </div>
     <div className="min-h-0 flex-1 overflow-auto p-3">
@@ -297,7 +325,27 @@ function ShuttleInline({ shuttle, canUpdate, dragging, dropActive, dropProps, on
           </li>;
         })}</ul>}
     </div>
+    {confirm && <Drawer open onClose={() => !busy && setConfirm(null)} variant="modal" title={confirm.title} panelClassName="max-w-lg">
+      <div className="space-y-4 py-4 text-sm">
+        <div>{confirm.body}</div>
+        <div className="flex flex-wrap gap-2">
+          <Button variant={confirm.danger ? "danger" : "primary"} disabled={busy} autoFocus onClick={() => { const current = confirm; void run(current.action).then(() => setConfirm(null)); }}>{confirm.icon}{busy ? "En cours…" : confirm.confirmLabel}</Button>
+          <Button variant="secondary" disabled={busy} onClick={() => setConfirm(null)}>Non, revenir</Button>
+        </div>
+      </div>
+    </Drawer>}
   </div>;
+}
+
+type Confirm = { title: string; body: ReactNode; confirmLabel: string; icon: ReactNode; danger?: boolean; action: () => Promise<unknown> };
+
+/** Liste compacte des objets (photo, quantité, trajet) dans une confirmation. */
+function ObjectList({ rows }: { rows: Shuttle["transits"] }) {
+  if (!rows.length) return null;
+  return <ul className="mt-2 max-h-64 space-y-1.5 overflow-y-auto">{rows.map(row => <li key={row._id} className="flex items-center gap-2.5 rounded-xl bg-[var(--crm-surface-2)] p-2">
+    <Thumb src={row.photoUrl} size={36} className="bg-[var(--crm-surface-3)]" />
+    <span className="min-w-0"><span className="block truncate font-semibold">{row.quantity} {row.unit} · {row.title}</span><span className="flex items-center gap-1 text-xs text-zinc-500">{shortLocation(row.origin)}<ArrowRight size={11} />{shortLocation(row.destination)}</span></span>
+  </li>)}</ul>;
 }
 
 /** Panneau vertical de droite : la demande sélectionnée (photo, produit, trajet). */
