@@ -22,6 +22,11 @@ const SITES: Record<string, { coords: LngLat; address: string }> = {
   "ESSpace 150": { coords: [1.725067, 49.469388], address: "150 Rte de Paris, 76220 Gournay-en-Bray" },
 };
 export const SELECTED_COLOR = "#a855f7";
+/** Couleurs des tracés et repères : plus foncées sur le fond clair pour rester lisibles. */
+const PALETTES = {
+  dark: { onSite: ON_SITE_COLOR, transit: TRANSIT_COLOR, selected: SELECTED_COLOR, nav: NAV_COLOR, idle: "#d4d4d8", labelText: "#09090b", lineOpacity: 0.8 },
+  light: { onSite: "#1d4ed8", transit: "#c2410c", selected: "#6d28d9", nav: "#1e40af", idle: "#52525b", labelText: "#ffffff", lineOpacity: 0.95 },
+};
 
 /** Coordonnées d'un lieu : un des trois sites, sinon géocodage Mapbox (mis en cache). */
 const geocodeCache = new Map<string, Promise<LngLat | null>>();
@@ -73,7 +78,8 @@ export function LogisticsMap({ requests, selected, place, onPlace, isDark, shutt
   const fitted = useRef(false);
   // Incrémenté à chaque chargement de style (thème) : les tracés sont alors redessinés.
   const [ready, setReady] = useState(0);
-  const styleUrl = isDark ? "mapbox://styles/mapbox/dark-v11" : "mapbox://styles/mapbox/light-v11";
+  const styleUrl = isDark ? "mapbox://styles/mapbox/dark-v11" : "mapbox://styles/mapbox/streets-v12";
+  const palette = PALETTES[isDark ? "dark" : "light"];
   const appliedStyle = useRef(styleUrl);
   const [coords, setCoords] = useState<Record<string, LngLat>>(() => Object.fromEntries(Object.entries(SITES).map(([name, site]) => [name, site.coords])));
   const [roads, setRoads] = useState<Record<string, LngLat[]>>({});
@@ -129,12 +135,12 @@ export function LogisticsMap({ requests, selected, place, onPlace, isDark, shutt
     map.on("style.load", () => {
       if (map.getSource("links")) return;
       map.addSource("links", { type: "geojson", data: emptyCollection });
-      map.addLayer({ id: "links", type: "line", source: "links", layout: { "line-cap": "round", "line-join": "round" }, paint: { "line-color": ["get", "color"], "line-width": ["get", "width"], "line-opacity": 0.8 } });
+      map.addLayer({ id: "links", type: "line", source: "links", layout: { "line-cap": "round", "line-join": "round" }, paint: { "line-color": ["get", "color"], "line-width": ["get", "width"], "line-opacity": ["get", "opacity"] } });
       map.addSource("nav", { type: "geojson", data: emptyCollection });
       map.addLayer({ id: "nav-casing", type: "line", source: "nav", layout: { "line-cap": "round", "line-join": "round" }, paint: { "line-color": "#ffffff", "line-width": 10, "line-opacity": 0.9 } });
-      map.addLayer({ id: "nav", type: "line", source: "nav", layout: { "line-cap": "round", "line-join": "round" }, paint: { "line-color": NAV_COLOR, "line-width": 6 } });
+      map.addLayer({ id: "nav", type: "line", source: "nav", layout: { "line-cap": "round", "line-join": "round" }, paint: { "line-color": ["get", "color"], "line-width": 6 } });
       map.addSource("selected", { type: "geojson", data: emptyCollection });
-      map.addLayer({ id: "selected", type: "line", source: "selected", layout: { "line-cap": "round", "line-join": "round" }, paint: { "line-color": SELECTED_COLOR, "line-width": 7, "line-opacity": 0.95 } });
+      map.addLayer({ id: "selected", type: "line", source: "selected", layout: { "line-cap": "round", "line-join": "round" }, paint: { "line-color": ["get", "color"], "line-width": 7, "line-opacity": 0.95 } });
       setReady(version => version + 1);
     });
     const observer = new ResizeObserver(() => map.resize());
@@ -174,10 +180,10 @@ export function LogisticsMap({ requests, selected, place, onPlace, isDark, shutt
     if (!source) return;
     const features = [...links.entries()].flatMap(([key, link]) => {
       const line = roads[key] ?? (coords[link.from] && coords[link.to] ? [coords[link.from], coords[link.to]] : null);
-      return line ? [lineFeature(line, { color: link.transit ? TRANSIT_COLOR : ON_SITE_COLOR, width: 2 + Math.min(link.count, 6) })] : [];
+      return line ? [lineFeature(line, { color: link.transit ? palette.transit : palette.onSite, width: 2 + Math.min(link.count, 6), opacity: palette.lineOpacity })] : [];
     });
     source.setData(navMode ? emptyCollection : { type: "FeatureCollection", features });
-  }, [ready, links, roads, coords, navMode]);
+  }, [ready, links, roads, coords, navMode, palette]);
 
   // Tracé de navigation et cadrage sur la tournée.
   useEffect(() => {
@@ -185,11 +191,11 @@ export function LogisticsMap({ requests, selected, place, onPlace, isDark, shutt
     const source = ready ? map?.getSource("nav") as mapboxgl.GeoJSONSource | undefined : undefined;
     if (!map || !source) return;
     if (!navMode || !plan) { source.setData(emptyCollection); return; }
-    source.setData(plan.line.length > 1 ? { type: "FeatureCollection", features: [lineFeature(plan.line, {})] } : emptyCollection);
+    source.setData(plan.line.length > 1 ? { type: "FeatureCollection", features: [lineFeature(plan.line, { color: palette.nav })] } : emptyCollection);
     const bounds = new mapboxgl.LngLatBounds();
     [...plan.line, ...plan.stops.map(stop => stop.at)].forEach(point => bounds.extend(point));
     map.fitBounds(bounds, { padding: { top: 70, bottom: 50, left: 70, right: 380 }, maxZoom: 13, duration: 900 });
-  }, [ready, plan, navMode]);
+  }, [ready, plan, navMode, palette]);
 
   // Repères des lieux.
   const selectedPlaces = selected ? [shortLocation(selected.origin), shortLocation(selected.destination)] : [];
@@ -207,7 +213,7 @@ export function LogisticsMap({ requests, selected, place, onPlace, isDark, shutt
         label.textContent = `${stop.name} · ${time(stop.arrival)}`;
         const badge = document.createElement("span");
         badge.className = "flex h-7 w-7 items-center justify-center rounded-full border-2 border-white text-xs font-bold text-white shadow-lg";
-        badge.style.backgroundColor = index === 0 ? "#10b981" : NAV_COLOR;
+        badge.style.backgroundColor = index === 0 ? "#059669" : palette.nav;
         badge.textContent = index === 0 ? "D" : String(index);
         element.append(label, badge);
         return new mapboxgl.Marker({ element, anchor: "bottom" }).setLngLat(stop.at).addTo(map);
@@ -224,13 +230,13 @@ export function LogisticsMap({ requests, selected, place, onPlace, isDark, shutt
       element.className = "flex flex-col items-center gap-1 focus:outline-none";
       const label = document.createElement("span");
       label.className = `flex items-center gap-1.5 whitespace-nowrap rounded-full px-2.5 py-1 text-xs font-bold text-zinc-950 shadow-lg ring-2 ${active ? "ring-white" : "ring-black/10"}`;
-      label.style.backgroundColor = active ? SELECTED_COLOR : info.waiting ? ON_SITE_COLOR : info.transit ? TRANSIT_COLOR : "#d4d4d8";
-      if (active) label.style.color = "#fff";
+      label.style.backgroundColor = active ? palette.selected : info.waiting ? palette.onSite : info.transit ? palette.transit : palette.idle;
+      label.style.color = active ? "#fff" : palette.labelText;
       label.textContent = name;
       if (info.waiting) { const count = document.createElement("span"); count.className = "rounded-full bg-black/80 px-1.5 text-[11px] text-white"; count.textContent = String(info.waiting); label.append(count); }
       const dot = document.createElement("span");
       dot.className = "h-3 w-3 rounded-full border-2 border-white shadow";
-      dot.style.backgroundColor = active ? SELECTED_COLOR : "#18181b";
+      dot.style.backgroundColor = active ? palette.selected : "#18181b";
       element.append(label, dot);
       element.addEventListener("click", event => { event.stopPropagation(); onPlace(place === name ? null : name); });
       return [new mapboxgl.Marker({ element, anchor: "bottom", offset: [0, 6] }).setLngLat(at).addTo(map)];
@@ -241,7 +247,7 @@ export function LogisticsMap({ requests, selected, place, onPlace, isDark, shutt
       map.fitBounds(bounds, { padding: 90, maxZoom: 11, duration: 0 });
       fitted.current = true;
     }
-  }, [ready, places, coords, place, selectedKey, onPlace, navMode, plan]);
+  }, [ready, places, coords, place, selectedKey, onPlace, navMode, plan, palette]);
 
   // Demande sélectionnée : tracé en surbrillance et centrage.
   useEffect(() => {
@@ -255,19 +261,19 @@ export function LogisticsMap({ requests, selected, place, onPlace, isDark, shutt
     let cancelled = false;
     void road(from, to).then(line => {
       if (cancelled) return;
-      source.setData({ type: "FeatureCollection", features: [lineFeature(line, {})] });
+      source.setData({ type: "FeatureCollection", features: [lineFeature(line, { color: palette.selected })] });
       const bounds = new mapboxgl.LngLatBounds(); line.forEach(point => bounds.extend(point));
       map.fitBounds(bounds, { padding: 90, maxZoom: 13, duration: 900 });
     });
     return () => { cancelled = true; };
-  }, [ready, selectedKey, coords]);
+  }, [ready, selectedKey, coords, palette]);
 
   if (!TOKEN) return <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-sm text-zinc-500"><MapPinOff size={28} />Carte indisponible : VITE_MAPBOX_ACCESS_TOKEN manquant.</div>;
   return <div className="absolute inset-0">
     <div ref={container} className="h-full w-full" />
     {navMode && shuttle && <NavPanel shuttle={shuttle} plan={plan} planning={planning} error={planError} />}
     {!navMode && <div className="pointer-events-none absolute right-2 top-2 flex flex-wrap justify-end gap-2 text-[11px] font-semibold">
-      {[[ON_SITE_COLOR, "À expédier"], [TRANSIT_COLOR, "En transit"], [SELECTED_COLOR, "Sélection"]].map(([color, label]) => <span key={label} className="flex items-center gap-1.5 rounded-full bg-black/70 px-2.5 py-1 text-white"><span className="h-2 w-4 rounded-full" style={{ backgroundColor: color }} />{label}</span>)}
+      {[[palette.onSite, "À expédier"], [palette.transit, "En transit"], [palette.selected, "Sélection"]].map(([color, label]) => <span key={label} className="flex items-center gap-1.5 rounded-full bg-black/70 px-2.5 py-1 text-white"><span className="h-2 w-4 rounded-full" style={{ backgroundColor: color }} />{label}</span>)}
     </div>}
   </div>;
 }
