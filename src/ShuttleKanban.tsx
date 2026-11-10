@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useQuery } from "convex/react";
 import { Plus } from "lucide-react";
 import { api } from "../convex/_generated/api";
@@ -31,19 +31,11 @@ export function ShuttleKanban({ canCreate, canUpdate }: { canCreate: boolean; ca
   const column = (status: Shuttle["status"]) => (board?.shuttles ?? []).filter(item => item.status === status)
     .sort((a, b) => status === "terminee" ? b.scheduledDate.localeCompare(a.scheduledDate) : a.scheduledDate.localeCompare(b.scheduledDate));
 
-  useEffect(() => {
-    if (!openShuttle) return;
-    const onKey = (event: KeyboardEvent) => { if (event.key === "Escape" && !openRequest && !(event.target instanceof HTMLInputElement)) setOpenShuttle(null); };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [openShuttle, openRequest]);
-
   return <div className="flex h-[calc(100dvh-3.5rem)] flex-col lg:h-dvh">
     <PageHeader title="Navettes v2" actions={canCreate && <Button size="sm" onClick={() => setCreating(true)}><Plus size={16} />Nouvelle navette</Button>} />
     <div className="flex min-h-0 flex-1 gap-4 p-4 sm:p-6">
       {!board ? <FullSpinner label="Chargement des navettes…" /> : <>
-      {/* Le kanban se rétrécit quand le panneau d'une navette est ouvert : ils restent côte à côte. */}
-      <div className={`min-h-0 min-w-0 flex-1 flex-col gap-4 overflow-auto lg:flex-row ${shuttle ? "hidden lg:flex" : "flex"}`}>
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-4 overflow-auto lg:flex-row">
         {COLUMNS.map(({ status, title, empty }) => {
           const rows = column(status);
           const visible = status === "terminee" && !showAllDone ? rows.slice(0, 8) : rows;
@@ -53,10 +45,10 @@ export function ShuttleKanban({ canCreate, canUpdate }: { canCreate: boolean; ca
           </KanbanColumn>;
         })}
       </div>
-      {shuttle && <ShuttleDetail key={shuttle._id} layout="panel" shuttle={shuttle} unassigned={board.unassigned} canUpdate={canUpdate} onClose={() => setOpenShuttle(null)} onOpenRequest={setOpenRequest} />}
       </>}
     </div>
     {creating && <NewShuttle onClose={() => setCreating(false)} onCreated={id => { setCreating(false); setOpenShuttle(id); }} />}
+    {shuttle && board && <ShuttleDetail key={shuttle._id} shuttle={shuttle} unassigned={board.unassigned} canUpdate={canUpdate} onClose={() => setOpenShuttle(null)} onOpenRequest={setOpenRequest} />}
     {request && <RequestDetail key={request._id} request={request} canUpdate={canUpdate} onClose={() => setOpenRequest(null)} />}
   </div>;
 }

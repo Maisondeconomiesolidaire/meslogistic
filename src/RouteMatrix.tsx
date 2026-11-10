@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery } from "convex/react";
-import { AlertTriangle, ArrowLeft, ArrowRight, Check, Info, Plus, X } from "lucide-react";
+import { AlertTriangle, ArrowLeft, ArrowRight, Check, Info, X } from "lucide-react";
 import { api } from "../convex/_generated/api";
 import type { Id } from "../convex/_generated/dataModel";
 import { PageHeader } from "./components/crm/PageHeader";
@@ -11,7 +11,8 @@ import { FullSpinner } from "./components/ui/Spinner";
 import { shortLocation } from "./Demandes";
 import { RequestDetail } from "./RequestDetail";
 import { today } from "./TransferPlanning";
-import { Stops, compatibility, errorText, stopsOf, type Shuttle, type Transit } from "./ShuttleBoard";
+import { OriginSelect, Stops, compatibility, errorText, stopsOf, type Shuttle, type Transit } from "./ShuttleBoard";
+import { LOCATIONS } from "../convex/meslogisticRules";
 
 /** Les trois sites, dans l'ordre de l'axe ; les autres lieux suivent par ordre alphabétique. */
 const AXIS_ORDER = ["Comptoir C", "Solidarium", "ESSpace 150"];
@@ -91,14 +92,13 @@ function RoutePanel({ route, unassigned, shuttles, canCreate, canUpdate, onClose
 }) {
   const addRequests = useMutation(api.meslogisticShuttles.addRequests);
   const createShuttle = useMutation(api.meslogistic.createShuttle);
-  const createRequest = useMutation(api.meslogistic.create);
   const [step, setStep] = useState<"list" | "assign">("list");
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const [target, setTarget] = useState<string>("");
   const [newName, setNewName] = useState(`${route.from} → ${route.to}`);
   const [newDate, setNewDate] = useState("");
-  const [adding, setAdding] = useState(false);
-  const [item, setItem] = useState({ title: "", quantity: "1", unit: "unité", dueDate: "" });
+  // Départ proposé : le site de départ de la liaison.
+  const [newOrigin, setNewOrigin] = useState(() => Object.values(LOCATIONS).find(name => shortLocation(name) === route.from) ?? "");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [done, setDone] = useState("");
@@ -119,17 +119,10 @@ function RoutePanel({ route, unassigned, shuttles, canCreate, canUpdate, onClose
     try {
       let shuttleId = target as Id<"mlShuttles">;
       let name = shuttles.find(shuttle => shuttle._id === target)?.name ?? "";
-      if (target === "new") { shuttleId = await createShuttle({ name: newName, scheduledDate: newDate }); name = newName.trim(); }
+      if (target === "new") { shuttleId = await createShuttle({ name: newName, scheduledDate: newDate, origin: newOrigin }); name = newName.trim(); }
       await addRequests({ shuttleId, requestIds: selection.map(row => row._id) });
       setDone(`${objets(selection.length)} affecté${selection.length > 1 ? "s" : ""} à « ${name} ».`);
       setPicked(new Set()); setTarget(""); setStep("list");
-    } catch (caught) { setError(errorText(caught)); } finally { setBusy(false); }
-  }
-  async function addItem(event: FormEvent) {
-    event.preventDefault(); setBusy(true); setError("");
-    try {
-      await createRequest({ title: item.title, quantity: Number(item.quantity.replace(",", ".")), unit: item.unit, customerName: "", origin: route.from, destination: route.to, dueDate: item.dueDate });
-      setItem({ title: "", quantity: "1", unit: "unité", dueDate: "" }); setAdding(false); setDone("Objet ajouté à la liaison.");
     } catch (caught) { setError(errorText(caught)); } finally { setBusy(false); }
   }
 
@@ -145,7 +138,7 @@ function RoutePanel({ route, unassigned, shuttles, canCreate, canUpdate, onClose
   const footer = step === "list" ? <div className="flex items-center justify-between gap-3">
     <div><p className="text-sm font-semibold">{objets(selection.length)} sélectionné{selection.length > 1 ? "s" : ""}</p><p className="text-[11px] text-zinc-500">Sélection possible sur plusieurs demandes</p></div>
     {canUpdate && <Button disabled={!selection.length} onClick={() => { setError(""); setDone(""); setStep("assign"); }}>Affecter<ArrowRight size={16} /></Button>}
-  </div> : <Button className="w-full" disabled={busy || !selection.length || !target || (target === "new" && (!newName.trim() || !newDate))} onClick={() => void confirm()}>{busy ? "Affectation…" : "Confirmer l’affectation"}</Button>;
+  </div> : <Button className="w-full" disabled={busy || !selection.length || !target || (target === "new" && (!newName.trim() || !newDate || !newOrigin))} onClick={() => void confirm()}>{busy ? "Affectation…" : "Confirmer l’affectation"}</Button>;
 
   // Échap ferme le panneau (sauf pendant la saisie d'un champ).
   useEffect(() => {
@@ -163,15 +156,7 @@ function RoutePanel({ route, unassigned, shuttles, canCreate, canUpdate, onClose
     {step === "list" ? <div className="space-y-4">
       <div className="flex items-center justify-between gap-2">
         <h3 className="font-semibold">Objets à transporter</h3>
-        {canCreate && <Button size="sm" variant="secondary" onClick={() => setAdding(!adding)}><Plus size={14} />Objet</Button>}
       </div>
-      {adding && <form onSubmit={addItem} className="grid gap-2 rounded-2xl border border-dashed border-[var(--crm-border)] p-3 sm:grid-cols-2">
-        <Input required autoFocus maxLength={300} placeholder="Objet (ex. Armoire)" value={item.title} onChange={event => setItem({ ...item, title: event.target.value })} className="sm:col-span-2" />
-        <Input required inputMode="decimal" aria-label="Quantité" value={item.quantity} onChange={event => setItem({ ...item, quantity: event.target.value })} />
-        <Input required maxLength={40} aria-label="Unité" value={item.unit} onChange={event => setItem({ ...item, unit: event.target.value })} />
-        <label className="text-xs text-zinc-500 sm:col-span-2">Échéance (obligatoire)<Input required type="date" min={now} value={item.dueDate} onChange={event => setItem({ ...item, dueDate: event.target.value })} /></label>
-        <div className="flex gap-2 sm:col-span-2"><Button type="submit" size="sm" disabled={busy}>Ajouter l’objet</Button><Button type="button" size="sm" variant="secondary" onClick={() => setAdding(false)}>Annuler</Button></div>
-      </form>}
 
       {canUpdate && unassigned.length > 0 && <div className="flex items-center justify-between text-sm">
         <label className="flex cursor-pointer items-center gap-2"><input type="checkbox" className="h-4 w-4 rounded-full" checked={allPicked} onChange={() => setPicked(allPicked ? new Set() : new Set(unassigned.map(row => row._id)))} />Tout sélectionner</label>
@@ -214,7 +199,7 @@ function RoutePanel({ route, unassigned, shuttles, canCreate, canUpdate, onClose
         {canCreate && <label className="flex cursor-pointer items-start gap-3 rounded-xl p-2 hover:bg-[var(--crm-surface-2)]">
           <input type="radio" name="shuttle" className="mt-1.5 h-4 w-4" checked={target === "new"} onChange={() => setTarget("new")} />
           <span className="min-w-0 flex-1 space-y-2"><span className="flex items-center gap-2"><span className="font-semibold">Nouvelle navette</span><span className="rounded-md bg-[var(--crm-surface-3)] px-2 py-0.5 text-xs font-semibold">Nouvelle affectation</span></span>
-            {target === "new" && <><Input maxLength={100} value={newName} onChange={event => setNewName(event.target.value)} aria-label="Nom de la navette" /><Input type="date" min={now} max={earliestDue} value={newDate} onChange={event => setNewDate(event.target.value)} aria-label="Date de départ" /></>}
+            {target === "new" && <><Input maxLength={100} value={newName} onChange={event => setNewName(event.target.value)} aria-label="Nom de la navette" /><Input type="date" min={now} max={earliestDue} value={newDate} onChange={event => setNewDate(event.target.value)} aria-label="Date de départ" /><OriginSelect value={newOrigin} onChange={setNewOrigin} /></>}
           </span>
         </label>}
         {candidates.length === 0 && !canCreate && <p className="text-sm text-zinc-500">Aucune navette planifiée à venir.</p>}

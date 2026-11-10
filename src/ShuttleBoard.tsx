@@ -3,7 +3,7 @@ import { useMutation, useQuery } from "convex/react";
 import { AlertTriangle, ArrowRight, Bus, CalendarClock, Check, ClipboardCheck, MapPin, PackageCheck, Pencil, Plus, Trash2, Truck, X } from "lucide-react";
 import { api } from "../convex/_generated/api";
 import type { Id } from "../convex/_generated/dataModel";
-import { onTheWay, sameDirection, tourStops } from "../convex/meslogisticRules";
+import { LOCATIONS, onTheWay, sameDirection, tourStops } from "../convex/meslogisticRules";
 import { PageHeader } from "./components/crm/PageHeader";
 import { KanbanColumn } from "./components/crm/KanbanColumn";
 import { LogisticsCard, ON_SITE_COLOR, TRANSIT_COLOR, Thumb, shortDate } from "./components/crm/LogisticsCard";
@@ -120,17 +120,14 @@ export function ShuttleCard({ shuttle, onOpen }: { shuttle: Shuttle; onOpen: () 
   const delivered = shuttle.transits.filter(row => row.status === "receptionnee").length;
   const late = shuttle.transits.filter(row => row.dueDate && row.dueDate < shuttle.scheduledDate).length;
   const stops = stopsOf(shuttle.transits).map(shortLocation);
-  const progress = shuttle.status === "planifiee" ? `${loaded}/${count} chargé${loaded > 1 ? "s" : ""}` : shuttle.status === "en_route" ? `${delivered}/${count} livré${delivered > 1 ? "s" : ""}` : "Livrée";
-  const via = stops.length > 2 ? `via ${stops.slice(1, -1).join(", ")}` : "";
+  const progress = shuttle.status === "planifiee" ? `${loaded}/${count} objet${count > 1 ? "s" : ""} chargé${loaded > 1 ? "s" : ""}` : shuttle.status === "en_route" ? "En transit" : `${delivered} arrivé${delivered > 1 ? "s" : ""} à destination`;
   return <LogisticsCard
     photos={count ? shuttle.transits.map(row => row.photoUrl) : undefined}
     source={shuttle.name}
     date={shortDate(shuttle.scheduledDate)}
     customer={`${count} objet${count > 1 ? "s" : ""}`}
     product={count ? progress : "Aucun objet"}
-    origin={stops[0] ?? "—"}
-    destination={stops[stops.length - 1] ?? "—"}
-    footer={[via, shuttle.status === "planifiee" && late ? `⚠ ${late} après échéance` : ""].filter(Boolean).join(" · ") || undefined}
+    footer={<span className="flex items-center justify-between gap-2"><span className="truncate text-[12px] font-bold">Départ : {shuttle.origin ? shortLocation(shuttle.origin) : stops[0] ?? "à définir"}</span>{shuttle.status === "planifiee" && late ? <span className="shrink-0">⚠ {late} après échéance</span> : null}</span>}
     color={CARD_COLOR[shuttle.status]}
     onOpen={onOpen}
   />;
@@ -152,23 +149,33 @@ export function RequestCardV1({ request, onOpen }: { request: Transit; onOpen: (
   />;
 }
 
+/** Lieu de départ d'une navette : l'un des trois sites. */
+export function OriginSelect({ value, onChange }: { value: string; onChange: (value: string) => void }) {
+  return <select required value={value} onChange={event => onChange(event.target.value)} className="mt-1 block h-10 w-full rounded-xl border border-[var(--crm-border)] bg-[var(--crm-surface-2)] px-3 text-sm">
+    <option value="" disabled>Choisir le lieu de départ</option>
+    {Object.values(LOCATIONS).map(name => <option key={name} value={name}>{name}</option>)}
+  </select>;
+}
+
 export function NewShuttle({ onClose, onCreated }: { onClose: () => void; onCreated: (id: Id<"mlShuttles">) => void }) {
   const create = useMutation(api.meslogistic.createShuttle);
   const [name, setName] = useState("");
+  const [origin, setOrigin] = useState("");
   const [date, setDate] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   async function submit(event: FormEvent) {
     event.preventDefault(); setBusy(true); setError("");
-    try { onCreated(await create({ name, scheduledDate: date })); } catch (caught) { setError(errorText(caught)); setBusy(false); }
+    try { onCreated(await create({ name, scheduledDate: date, origin })); } catch (caught) { setError(errorText(caught)); setBusy(false); }
   }
   return <Drawer open onClose={onClose} variant="modal" title="Nouvelle navette" panelClassName="max-w-xl">
     <form onSubmit={submit} className="space-y-4 py-4">
       <p className="text-sm text-zinc-500">Ensuite, ajoutez-y les demandes à transporter.</p>
       <label className="block text-sm font-medium">Nom de la navette<Input required maxLength={100} autoFocus placeholder="Ex. Tournée du mardi" value={name} onChange={event => setName(event.target.value)} /></label>
+      <label className="block text-sm font-medium">Lieu de départ<OriginSelect value={origin} onChange={setOrigin} /></label>
       <label className="block text-sm font-medium">Date de départ<Input required type="date" min={today()} value={date} onChange={event => setDate(event.target.value)} /></label>
       {error && <p role="alert" className="text-sm text-red-500">{error}</p>}
-      <div className="flex gap-2"><Button type="submit" disabled={busy || !name.trim() || !date}>{busy ? "Création…" : "Créer et ajouter des demandes"}</Button><Button type="button" variant="secondary" onClick={onClose}>Annuler</Button></div>
+      <div className="flex gap-2"><Button type="submit" disabled={busy || !name.trim() || !date || !origin}>{busy ? "Création…" : "Créer et ajouter des demandes"}</Button><Button type="button" variant="secondary" onClick={onClose}>Annuler</Button></div>
     </form>
   </Drawer>;
 }
@@ -182,13 +189,13 @@ export function ShuttleDetail({ shuttle, unassigned, canUpdate, onClose, onOpenR
   const deleteShuttle = useMutation(api.meslogisticShuttles.deleteShuttle);
   const setLoaded = useMutation(api.meslogisticShuttles.setLoaded);
   const [picked, setPicked] = useState<Set<string>>(new Set());
-  const [delivering, setDelivering] = useState<Set<string>>(new Set());
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState(shuttle.name);
   const [date, setDate] = useState(shuttle.scheduledDate);
+  const [origin, setOrigin] = useState(shuttle.origin ?? "");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  useEffect(() => { setPicked(new Set()); setDelivering(new Set()); }, [shuttle.status]);
+  useEffect(() => { setPicked(new Set()); }, [shuttle.status]);
   const planned = shuttle.status === "planifiee";
   const enRoute = shuttle.status === "en_route";
   const stops = stopsOf(shuttle.transits);
@@ -207,7 +214,7 @@ export function ShuttleDetail({ shuttle, unassigned, canUpdate, onClose, onOpenR
   const steps: { key: Status; label: string }[] = [{ key: "planifiee", label: "Planifiée" }, { key: "en_route", label: "En route" }, { key: "terminee", label: "Terminée" }];
   const reached = steps.findIndex(step => step.key === shuttle.status);
 
-  const headerContent = <><h2 className="text-2xl font-bold">{shuttle.name}</h2><p className="mt-1 flex items-center gap-2 text-sm capitalize"><CalendarClock size={15} />{longDate(shuttle.scheduledDate)} · {shuttle.transits.length} objet{shuttle.transits.length > 1 ? "s" : ""}</p></>;
+  const headerContent = <><h2 className="text-2xl font-bold">{shuttle.name}</h2><p className="mt-1 flex items-center gap-2 text-sm capitalize"><CalendarClock size={15} />{longDate(shuttle.scheduledDate)} · {shuttle.transits.length} objet{shuttle.transits.length > 1 ? "s" : ""}</p>{shuttle.origin && <p className="mt-1 flex items-center gap-2 text-sm font-semibold"><MapPin size={15} />Départ : {shortLocation(shuttle.origin)}</p>}</>;
   const body = <div className={layout === "panel" ? "space-y-6" : "space-y-6 py-6"}>
       {error && <p role="alert" className="rounded-xl bg-red-500/10 p-3 text-sm text-red-500">{error}</p>}
 
@@ -220,28 +227,26 @@ export function ShuttleDetail({ shuttle, unassigned, canUpdate, onClose, onOpenR
         {stops.length > 0 && <div className="mt-5"><p className="text-xs font-semibold uppercase tracking-[0.14em] text-zinc-500">Tournée</p><Stops stops={stops} className="mt-1.5 text-lg font-bold" /></div>}
         {planned && shuttle.transits.length > 0 && <div className={`mt-5 rounded-xl border p-3 ${allLoaded ? "border-green-500/40 bg-green-500/10" : "border-amber-500/40 bg-amber-500/10"}`}>
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <p className="flex items-center gap-2 text-sm font-semibold"><ClipboardCheck size={16} />Chargement : {loadedCount}/{shuttle.transits.length} objet{shuttle.transits.length > 1 ? "s" : ""} confirmé{loadedCount > 1 ? "s" : ""}</p>
+            <p className="flex items-center gap-2 text-sm font-semibold"><ClipboardCheck size={16} />{loadedCount}/{shuttle.transits.length} objet{shuttle.transits.length > 1 ? "s" : ""} chargé{loadedCount > 1 ? "s" : ""}</p>
             {canUpdate && !allLoaded && <Button size="sm" variant="secondary" disabled={busy} onClick={() => { if (window.confirm(`Confirmer que les ${shuttle.transits.length} objets sont bien chargés dans « ${shuttle.name} » ?`)) void run(() => setLoaded({ shuttleId: shuttle._id, loaded: true })); }}><Check size={14} />Tout est chargé</Button>}
           </div>
           <div className="mt-2 h-2 overflow-hidden rounded-full bg-[var(--crm-surface-3)]"><div className={`h-full rounded-full transition-all ${allLoaded ? "bg-green-500" : "bg-amber-500"}`} style={{ width: `${loadedCount / shuttle.transits.length * 100}%` }} /></div>
-          {!allLoaded && <p className="mt-2 text-xs text-zinc-500">Cochez « Chargé » sur chaque objet une fois dans le véhicule : le départ est possible quand tout est confirmé.</p>}
+          {!allLoaded && <p className="mt-2 text-xs text-zinc-500">Cochez « Chargé » sur chaque objet une fois dans le véhicule. Seuls les objets chargés partent ; les autres reviendront « À planifier ».</p>}
         </div>}
-        {canUpdate && planned && <div className="mt-4 flex flex-wrap items-center gap-3"><Button disabled={busy || !allLoaded} onClick={() => void run(() => depart({ shuttleId: shuttle._id }))}><Truck size={16} />Départ de la navette</Button><span className="text-xs text-zinc-500">{!shuttle.transits.length ? "Ajoutez d’abord des demandes." : allLoaded ? `Les ${shuttle.transits.length} demandes passent « En transit ».` : `Encore ${shuttle.transits.length - loadedCount} objet${shuttle.transits.length - loadedCount > 1 ? "s" : ""} à confirmer.`}</span></div>}
-        {canUpdate && enRoute && <div className="mt-5 flex flex-wrap items-center gap-3"><Button disabled={busy} onClick={() => void run(() => deliver({ shuttleId: shuttle._id }))}><PackageCheck size={16} />Arrivée · tout est livré</Button><span className="text-xs text-zinc-500">Les demandes deviennent « Disponibles à destination » (Bâtire prévenu).</span></div>}
+        {canUpdate && planned && <div className="mt-4 flex flex-wrap items-center gap-3"><Button disabled={busy || loadedCount === 0} onClick={() => { const left = shuttle.transits.length - loadedCount; if (left && !window.confirm(`${left} objet${left > 1 ? "s" : ""} non chargé${left > 1 ? "s" : ""} ne partira pas et reviendra « À planifier ». Confirmer le départ ?`)) return; void run(() => depart({ shuttleId: shuttle._id })); }}><Truck size={16} />Départ de la navette</Button><span className="text-xs text-zinc-500">{!shuttle.transits.length ? "Ajoutez d’abord des demandes." : loadedCount === 0 ? "Cochez « Chargé » sur les objets embarqués." : `${loadedCount} objet${loadedCount > 1 ? "s" : ""} chargé${loadedCount > 1 ? "s" : ""} passe${loadedCount > 1 ? "nt" : ""} « En transit ».`}</span></div>}
+        {canUpdate && enRoute && <div className="mt-5 flex flex-wrap items-center gap-3"><Button disabled={busy} onClick={() => void run(() => deliver({ shuttleId: shuttle._id }))}><PackageCheck size={16} />Arrivée</Button><span className="text-xs text-zinc-500">Les {pendingDelivery.length} objet{pendingDelivery.length > 1 ? "s" : ""} chargé{pendingDelivery.length > 1 ? "s" : ""} passe{pendingDelivery.length > 1 ? "nt" : ""} « Arrivé à destination » (Bâtire prévenu).</span></div>}
         {shuttle.departedAt && <p className="mt-3 text-xs text-zinc-500">Partie le {new Date(shuttle.departedAt).toLocaleString("fr-FR")}{shuttle.completedAt ? ` · arrivée le ${new Date(shuttle.completedAt).toLocaleString("fr-FR")}` : ""}</p>}
       </section>
 
       <section className="space-y-3">
         <div className="flex flex-wrap items-center justify-between gap-2"><h3 className="font-semibold">Demandes dans la navette ({shuttle.transits.length})</h3>
-          {canUpdate && enRoute && delivering.size > 0 && <Button size="sm" variant="secondary" disabled={busy} onClick={() => void run(() => deliver({ shuttleId: shuttle._id, requestIds: [...delivering] as Id<"mlRequests">[] }), () => setDelivering(new Set()))}><PackageCheck size={15} />Livrer la sélection ({delivering.size})</Button>}
         </div>
         {shuttle.transits.length === 0 ? <p className="rounded-xl bg-[var(--crm-surface-2)] p-4 text-sm text-zinc-500">Aucune demande pour l’instant. Ajoutez-en ci-dessous.</p> :
           <div className="grid gap-2">{shuttle.transits.map(row => <RequestChip key={row._id} request={row} onOpen={() => onOpenRequest(row._id)}>
             <div className="mt-2 flex items-center justify-between gap-2 border-t border-[var(--crm-border)] pt-2 text-xs">
               {planned && row.status === "a_preparer" ? <label className={`flex items-center gap-1.5 font-semibold ${row.loadedAt ? "text-green-500" : "text-amber-500"}`} title={row.loadedAt ? `Confirmé par ${row.loadedBy ?? "?"} le ${new Date(row.loadedAt).toLocaleString("fr-FR")}` : undefined}><input type="checkbox" disabled={!canUpdate || busy} checked={Boolean(row.loadedAt)} onChange={event => void run(() => setLoaded({ shuttleId: shuttle._id, requestId: row._id, loaded: event.target.checked }))} />{row.loadedAt ? "Chargé" : "À charger"}</label>
-                : <span className={row.status === "receptionnee" ? "font-semibold text-green-500" : row.status === "en_transit" ? "font-semibold" : "text-zinc-500"} style={row.status === "en_transit" ? { color: TRANSIT_COLOR } : undefined}>{row.status === "receptionnee" ? "Livrée" : row.status === "en_transit" ? "En transit" : "À charger"}</span>}
+                : <span className={row.status === "receptionnee" ? "font-semibold text-green-500" : row.status === "en_transit" ? "font-semibold" : "text-zinc-500"} style={row.status === "en_transit" ? { color: TRANSIT_COLOR } : undefined}>{row.status === "receptionnee" ? "Arrivé à destination" : row.status === "en_transit" ? "Chargé · en transit" : "À charger"}</span>}
               {canUpdate && planned && <button type="button" disabled={busy} onClick={() => void run(() => removeRequest({ requestId: row._id }))} className="flex items-center gap-1 text-zinc-500 hover:text-red-500"><X size={13} />Retirer</button>}
-              {canUpdate && enRoute && row.status === "en_transit" && <label className="flex items-center gap-1.5"><input type="checkbox" checked={delivering.has(row._id)} onChange={() => toggle(delivering, row._id, setDelivering)} />Livrée</label>}
             </div>
             {planned && row.dueDate && row.dueDate < shuttle.scheduledDate && <p className="mt-1.5 flex items-center gap-1 text-[11px] font-semibold text-amber-500"><AlertTriangle size={12} />La navette part après l’échéance.</p>}
           </RequestChip>)}</div>}
@@ -268,9 +273,10 @@ export function ShuttleDetail({ shuttle, unassigned, canUpdate, onClose, onOpenR
       </section>}
 
       {canUpdate && planned && <section className="flex flex-wrap items-end gap-3 border-t border-[var(--crm-border)] pt-5">
-        {editing ? <form onSubmit={event => { event.preventDefault(); void run(() => updateShuttle({ shuttleId: shuttle._id, name, scheduledDate: date }), () => setEditing(false)); }} className="flex flex-wrap items-end gap-2">
+        {editing ? <form onSubmit={event => { event.preventDefault(); void run(() => updateShuttle({ shuttleId: shuttle._id, name, scheduledDate: date, origin: origin || undefined }), () => setEditing(false)); }} className="flex flex-wrap items-end gap-2">
           <label className="text-sm">Nom<Input required maxLength={100} value={name} onChange={event => setName(event.target.value)} /></label>
           <label className="text-sm">Date<Input required type="date" value={date} onChange={event => setDate(event.target.value)} /></label>
+          <label className="text-sm">Départ<OriginSelect value={origin} onChange={setOrigin} /></label>
           <Button type="submit" size="sm" disabled={busy}>Enregistrer</Button><Button type="button" size="sm" variant="secondary" onClick={() => setEditing(false)}>Annuler</Button>
         </form> : <Button size="sm" variant="secondary" onClick={() => setEditing(true)}><Pencil size={14} />Modifier nom / date</Button>}
         <Button size="sm" variant="danger" disabled={busy} onClick={() => { if (window.confirm(`Supprimer la navette « ${shuttle.name} » ? Ses demandes reviendront dans « À planifier ».`)) void run(() => deleteShuttle({ shuttleId: shuttle._id }), onClose); }}><Trash2 size={14} />Supprimer la navette</Button>

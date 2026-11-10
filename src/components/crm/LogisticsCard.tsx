@@ -27,8 +27,8 @@ export function LogisticsCard({ source, date, customer, product, origin, destina
   date: string;
   customer: string;
   product: string;
-  origin: string;
-  destination: string;
+  origin?: string;
+  destination?: string;
   footer?: ReactNode;
   color: string;
   onOpen: () => void;
@@ -56,7 +56,7 @@ export function LogisticsCard({ source, date, customer, product, origin, destina
         <span className="min-w-0 truncate">{customer}</span>
         <span className="min-w-0 truncate text-right">{product}</span>
       </span>
-      <span className="mt-2.5 flex items-center gap-1.5 text-[13px] font-bold">
+      {origin !== undefined && <span className="mt-2.5 flex items-center gap-1.5 text-[13px] font-bold">
         <span className="max-w-[45%] truncate">{origin}</span>
         <span aria-hidden className="flex min-w-6 flex-1 items-center">
           <span className="h-px flex-1 bg-current" />
@@ -64,7 +64,7 @@ export function LogisticsCard({ source, date, customer, product, origin, destina
         </span>
         <span className="sr-only">vers</span>
         <span className="max-w-[45%] truncate">{destination}</span>
-      </span>
+      </span>}
       </span>
       </span>
       {footer && <span className="mt-1 block text-right text-[11px] tabular-nums">{footer}</span>}
