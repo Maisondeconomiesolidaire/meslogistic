@@ -6,7 +6,7 @@ import type { Id } from "../convex/_generated/dataModel";
 import { onTheWay, sameDirection, tourStops } from "../convex/meslogisticRules";
 import { PageHeader } from "./components/crm/PageHeader";
 import { KanbanColumn } from "./components/crm/KanbanColumn";
-import { LogisticsCard, ON_SITE_COLOR, TRANSIT_COLOR, shortDate } from "./components/crm/LogisticsCard";
+import { LogisticsCard, ON_SITE_COLOR, TRANSIT_COLOR, Thumb, shortDate } from "./components/crm/LogisticsCard";
 import { Button } from "./components/ui/Button";
 import { Input } from "./components/ui/Field";
 import { Drawer } from "./components/ui/Drawer";
@@ -99,10 +99,13 @@ export function ShuttleBoard({ canCreate, canUpdate }: { canCreate: boolean; can
 export function RequestChip({ request, onOpen, children }: { request: Transit; onOpen?: () => void; children?: ReactNode }) {
   const late = request.dueDate && request.dueDate < today();
   return <div className="rounded-2xl bg-[var(--crm-surface)] p-3 text-sm ring-1 ring-[var(--crm-border)]">
-    <button type="button" onClick={onOpen} className="block w-full text-left">
+    <button type="button" onClick={onOpen} className="flex w-full items-start gap-3 text-left">
+      <Thumb src={request.photoUrl} size={48} className="bg-[var(--crm-surface-3)]" />
+      <span className="block min-w-0 flex-1">
       <span className="flex items-start justify-between gap-2"><span className="min-w-0 truncate font-semibold">{request.quantity} {request.unit} · {request.title}</span>{request.fromOrder && <span className="shrink-0 rounded-md px-1.5 text-[10px] font-bold text-zinc-950" style={{ backgroundColor: TRANSIT_COLOR }}>BatiRE</span>}</span>
       <span className="mt-1.5 flex items-center gap-1.5 text-xs font-semibold"><MapPin size={12} className="shrink-0" />{shortLocation(request.origin)}<ArrowRight size={12} className="shrink-0" />{shortLocation(request.destination)}</span>
       <span className="mt-1 flex items-center justify-between gap-2 text-[11px] text-zinc-500"><span className="truncate">{request.customerName || request.reference}</span>{request.dueDate && <span className={`shrink-0 tabular-nums ${late ? "font-semibold text-red-500" : ""}`}>échéance {shortDate(request.dueDate)}</span>}</span>
+      </span>
     </button>
     {children}
   </div>;
@@ -120,6 +123,7 @@ export function ShuttleCard({ shuttle, onOpen }: { shuttle: Shuttle; onOpen: () 
   const progress = shuttle.status === "planifiee" ? `${loaded}/${count} chargé${loaded > 1 ? "s" : ""}` : shuttle.status === "en_route" ? `${delivered}/${count} livré${delivered > 1 ? "s" : ""}` : "Livrée";
   const via = stops.length > 2 ? `via ${stops.slice(1, -1).join(", ")}` : "";
   return <LogisticsCard
+    photos={count ? shuttle.transits.map(row => row.photoUrl) : undefined}
     source={shuttle.name}
     date={shortDate(shuttle.scheduledDate)}
     customer={`${count} objet${count > 1 ? "s" : ""}`}
@@ -135,6 +139,7 @@ export function ShuttleCard({ shuttle, onOpen }: { shuttle: Shuttle; onOpen: () 
 /** Demande sans navette, carte identique à Demandes v1. */
 export function RequestCardV1({ request, onOpen }: { request: Transit; onOpen: () => void }) {
   return <LogisticsCard
+    photos={[request.photoUrl]}
     source={request.fromOrder ? "BatiRE" : "Demande interne"}
     date={request.reference}
     customer={request.customerName || "Déplacement interne"}

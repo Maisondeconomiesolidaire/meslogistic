@@ -12,7 +12,7 @@ import { FullSpinner } from "./components/ui/Spinner";
 import { EmptyState } from "./components/ui/EmptyState";
 import { LogisticsCard, TRANSIT_COLOR, shortDate } from "./components/crm/LogisticsCard";
 import { RequestDetail, NewRequest } from "./RequestDetail";
-export type Request = Doc<"mlRequests"> & { collected?: boolean };
+export type Request = Doc<"mlRequests"> & { collected?: boolean; photoUrl?: string | null };
 export const stages = [{ key: "a_preparer", label: "Nouveau", color: "#3b82f6" }, { key: "en_transit", label: "En transit", color: TRANSIT_COLOR }, { key: "receptionnee", label: "Disponible à destination", color: "#10b981" }] as const;
 export const statusLabel = (status: Request["status"]) => status === "annulee" ? "Annulée" : stages.find(stage => stage.key === status)?.label ?? status;
 /** Noms courts des lieux, identiques aux cartes Bâtire. */
@@ -49,6 +49,7 @@ export function Demandes({ canCreate, canUpdate }: { canCreate: boolean; canUpda
 }
 function RequestCard({request:r,onOpen}:{request:Request;onOpen:()=>void}) {
   return <LogisticsCard
+    photos={[r.photoUrl]}
     source={r.orderId ? "BatiRE" : "Demande interne"}
     date={shortDate(r.createdAt)}
     customer={r.customerName || "Déplacement interne"}

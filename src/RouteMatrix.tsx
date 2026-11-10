@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { useMutation, useQuery } from "convex/react";
-import { AlertTriangle, ArrowLeft, ArrowRight, Check, Info, Package, Plus, X } from "lucide-react";
+import { AlertTriangle, ArrowLeft, ArrowRight, Check, Info, Plus, X } from "lucide-react";
 import { api } from "../convex/_generated/api";
 import type { Id } from "../convex/_generated/dataModel";
 import { PageHeader } from "./components/crm/PageHeader";
-import { shortDate } from "./components/crm/LogisticsCard";
+import { Thumb, shortDate } from "./components/crm/LogisticsCard";
 import { Button } from "./components/ui/Button";
 import { Input } from "./components/ui/Field";
 import { FullSpinner } from "./components/ui/Spinner";
@@ -42,8 +42,6 @@ export function RouteMatrix({ canCreate, canUpdate }: { canCreate: boolean; canU
 
   const onRoute = <T extends { origin: string; destination: string }>(rows: T[], from: string, to: string) => rows.filter(row => shortLocation(row.origin) === from && shortLocation(row.destination) === to);
   const plannedTransits = planned.flatMap(shuttle => shuttle.transits.map(row => ({ ...row, shuttle })));
-  // Objets déjà affectés à une navette pas encore terminée (planifiée ou en route).
-  const activeTransits = (board?.shuttles ?? []).filter(shuttle => shuttle.status !== "terminee").flatMap(shuttle => shuttle.transits.filter(row => row.status !== "receptionnee").map(row => ({ ...row, shuttle })));
 
   const grid = { gridTemplateColumns: `minmax(84px, auto) repeat(${places.length}, minmax(0, 1fr))`, gridTemplateRows: `auto repeat(${places.length}, minmax(64px, 1fr))` };
   return <div className="flex h-[calc(100dvh-3.5rem)] flex-col lg:h-dvh">
@@ -78,26 +76,23 @@ export function RouteMatrix({ canCreate, canUpdate }: { canCreate: boolean; canU
             </div>
           </div>
         </section>
-        {route && <RoutePanel key={`${route.from}-${route.to}`} route={route} unassigned={onRoute(board.unassigned, route.from, route.to)} assigned={onRoute(activeTransits, route.from, route.to)} shuttles={board.shuttles} canCreate={canCreate} canUpdate={canUpdate} onClose={() => setRoute(null)} onOpenRequest={setOpenRequest} />}
+        {route && <RoutePanel key={`${route.from}-${route.to}`} route={route} unassigned={onRoute(board.unassigned, route.from, route.to)} shuttles={board.shuttles} canCreate={canCreate} canUpdate={canUpdate} onClose={() => setRoute(null)} onOpenRequest={setOpenRequest} />}
       </>}
     </div>
     {request && <RequestDetail key={request._id} request={request} canUpdate={canUpdate} onClose={() => setOpenRequest(null)} />}
   </div>;
 }
 
-type Assigned = Transit & { shuttle: Shuttle };
-type Filter = "tous" | "non" | "oui";
 
 /** Panneau latéral d'une liaison : liste des objets, puis affectation à une navette. */
-function RoutePanel({ route, unassigned, assigned, shuttles, canCreate, canUpdate, onClose, onOpenRequest }: {
-  route: Route; unassigned: Transit[]; assigned: Assigned[]; shuttles: Shuttle[];
+function RoutePanel({ route, unassigned, shuttles, canCreate, canUpdate, onClose, onOpenRequest }: {
+  route: Route; unassigned: Transit[]; shuttles: Shuttle[];
   canCreate: boolean; canUpdate: boolean; onClose: () => void; onOpenRequest: (id: string) => void;
 }) {
   const addRequests = useMutation(api.meslogisticShuttles.addRequests);
   const createShuttle = useMutation(api.meslogistic.createShuttle);
   const createRequest = useMutation(api.meslogistic.create);
   const [step, setStep] = useState<"list" | "assign">("list");
-  const [filter, setFilter] = useState<Filter>("tous");
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const [target, setTarget] = useState<string>("");
   const [newName, setNewName] = useState(`${route.from} → ${route.to}`);
@@ -113,11 +108,6 @@ function RoutePanel({ route, unassigned, assigned, shuttles, canCreate, canUpdat
   const now = today();
   const selection = unassigned.filter(row => picked.has(row._id));
   const earliestDue = selection.map(row => row.dueDate).filter(Boolean).sort()[0];
-  const rows: Array<{ row: Transit; shuttle?: Shuttle }> = [
-    ...(filter === "oui" ? [] : unassigned.map(row => ({ row }))),
-    ...(filter === "non" ? [] : assigned.map(row => ({ row, shuttle: row.shuttle }))),
-  ];
-  const total = unassigned.length + assigned.length;
   const allPicked = unassigned.length > 0 && picked.size === unassigned.length;
   const candidates = shuttles.filter(shuttle => shuttle.status === "planifiee" && shuttle.scheduledDate >= now).map(shuttle => ({
     shuttle, ...(selection[0] ? compatibility(selection[0], shuttle.transits) : { score: 0 }), late: Boolean(earliestDue && shuttle.scheduledDate > earliestDue),
@@ -149,7 +139,7 @@ function RoutePanel({ route, unassigned, assigned, shuttles, canCreate, canUpdat
       <ArrowRight size={14} className="text-zinc-500" />
       <span className="rounded-full bg-sky-500/15 px-2.5 py-0.5 text-sky-400">{route.to}</span>
     </p>
-    <p className="mt-1.5 text-xs font-normal text-zinc-500">{objets(total)} sur cette liaison</p>
+    <p className="mt-1.5 text-xs font-normal text-zinc-500">{objets(unassigned.length)} à affecter</p>
   </div>;
 
   const footer = step === "list" ? <div className="flex items-center justify-between gap-3">
@@ -183,36 +173,31 @@ function RoutePanel({ route, unassigned, assigned, shuttles, canCreate, canUpdat
         <div className="flex gap-2 sm:col-span-2"><Button type="submit" size="sm" disabled={busy}>Ajouter l’objet</Button><Button type="button" size="sm" variant="secondary" onClick={() => setAdding(false)}>Annuler</Button></div>
       </form>}
 
-      <div className="grid grid-cols-3 rounded-full bg-[var(--crm-surface-2)] p-1 text-sm font-semibold">
-        {([["tous", "Tous"], ["non", "Non affectés"], ["oui", "Affectés"]] as const).map(([key, label]) => <button key={key} type="button" onClick={() => setFilter(key)} className={`rounded-full py-1.5 transition ${filter === key ? "bg-[var(--crm-surface-3)] text-[var(--foreground)]" : "text-zinc-500 hover:text-zinc-300"}`}>{label}</button>)}
-      </div>
-
-      {canUpdate && filter !== "oui" && unassigned.length > 0 && <div className="flex items-center justify-between text-sm">
+      {canUpdate && unassigned.length > 0 && <div className="flex items-center justify-between text-sm">
         <label className="flex cursor-pointer items-center gap-2"><input type="checkbox" className="h-4 w-4 rounded-full" checked={allPicked} onChange={() => setPicked(allPicked ? new Set() : new Set(unassigned.map(row => row._id)))} />Tout sélectionner</label>
         <span className="text-zinc-500">{picked.size} sélectionné{picked.size > 1 ? "s" : ""}</span>
       </div>}
 
-      {rows.length === 0 ? <p className="rounded-xl bg-[var(--crm-surface-2)] p-4 text-sm text-zinc-500">Aucun objet.</p> :
-        <ul className="space-y-2">{rows.map(({ row, shuttle }) => {
-          const selectable = !shuttle && canUpdate;
+      {unassigned.length === 0 ? <p className="rounded-xl bg-[var(--crm-surface-2)] p-4 text-sm text-zinc-500">Tous les objets de cette liaison sont affectés.</p> :
+        <ul className="space-y-2">{unassigned.map(row => {
+          const selectable = canUpdate;
           const checked = picked.has(row._id);
           const late = row.dueDate && row.dueDate < now;
           return <li key={row._id} className={`flex items-center gap-3 rounded-2xl border p-3.5 ${checked ? "border-brand-500" : "border-[var(--crm-border)]"}`}>
             <input type="checkbox" className="h-4 w-4" disabled={!selectable} checked={checked} onChange={() => toggle(row._id)} aria-label={`Sélectionner ${row.title}`} />
-            <Package size={18} className="shrink-0 text-zinc-400" />
+            <Thumb src={row.photoUrl} size={52} className="bg-[var(--crm-surface-3)]" />
             <button type="button" onClick={() => onOpenRequest(row._id)} className="min-w-0 flex-1 text-left">
               <p className="truncate font-semibold">{row.title}{row.quantity !== 1 || row.unit !== "unité" ? <span className="font-normal text-zinc-500"> · {row.quantity} {row.unit}</span> : null}</p>
               <p className="truncate text-[11px] text-zinc-500">{row.reference}{row.customerName ? ` · ${row.customerName}` : ""}{row.dueDate ? ` · ` : ""}{row.dueDate && <span className={late ? "font-semibold text-red-500" : ""}>échéance {shortDate(row.dueDate)}</span>}</p>
             </button>
-            {shuttle ? <span className="shrink-0 rounded-md bg-green-500/15 px-2 py-1 text-xs font-semibold text-green-500">{shuttle.name}</span>
-              : <span className="shrink-0 rounded-md bg-orange-500/15 px-2 py-1 text-xs font-semibold text-orange-400">À affecter</span>}
+            <span className="shrink-0 rounded-md bg-orange-500/15 px-2 py-1 text-xs font-semibold text-orange-400">À affecter</span>
           </li>;
         })}</ul>}
     </div> : <div className="space-y-5">
       <button type="button" onClick={() => setStep("list")} className="flex items-center gap-3 text-lg font-bold"><ArrowLeft size={18} />Affecter à une navette</button>
       <div>
         <p className="text-sm font-semibold">{objets(selection.length)} à affecter</p>
-        <ul className="mt-2 space-y-1.5">{selection.map(row => <li key={row._id} className="flex items-center gap-2 text-sm"><Package size={14} className="shrink-0 text-zinc-400" />{row.title} · <span className="text-zinc-500">{row.reference}</span></li>)}</ul>
+        <ul className="mt-2 space-y-1.5">{selection.map(row => <li key={row._id} className="flex items-center gap-2.5 text-sm"><Thumb src={row.photoUrl} size={32} className="rounded-lg bg-[var(--crm-surface-3)]" />{row.title} · <span className="text-zinc-500">{row.reference}</span></li>)}</ul>
       </div>
       <div className="space-y-2">
         <h3 className="font-semibold">Sélectionner une navette</h3>
