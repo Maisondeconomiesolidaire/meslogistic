@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import { useMutation, useQuery } from "convex/react";
-import { AlertTriangle, ArrowRight, Bus, CalendarClock, Check, MapPin, PackageCheck, Pencil, Plus, Trash2, Truck, X } from "lucide-react";
+import { AlertTriangle, ArrowRight, Bus, CalendarClock, Check, ClipboardCheck, MapPin, PackageCheck, Pencil, Plus, Trash2, Truck, X } from "lucide-react";
 import { api } from "../convex/_generated/api";
 import type { Id } from "../convex/_generated/dataModel";
 import { onTheWay, sameDirection, tourStops } from "../convex/meslogisticRules";
@@ -115,7 +115,7 @@ function ShuttleCard({ shuttle, onOpen }: { shuttle: Shuttle; onOpen: () => void
     <span className="flex items-start justify-between gap-2"><span className="flex min-w-0 items-center gap-2 font-bold"><Bus size={15} className="shrink-0" /><span className="truncate">{shuttle.name}</span></span><span className="shrink-0 text-xs tabular-nums text-zinc-400">{shortDate(shuttle.scheduledDate)}</span></span>
     <Stops stops={stopsOf(shuttle.transits)} className="mt-2 text-xs font-semibold" />
     <span className="mt-2 flex items-center justify-between gap-2 text-xs text-zinc-500">
-      <span>{shuttle.transits.length} demande{shuttle.transits.length > 1 ? "s" : ""}{shuttle.status === "en_route" ? ` · ${delivered} livrée${delivered > 1 ? "s" : ""}` : ""}</span>
+      <span>{shuttle.transits.length} demande{shuttle.transits.length > 1 ? "s" : ""}{shuttle.status === "en_route" ? ` · ${delivered} livrée${delivered > 1 ? "s" : ""}` : shuttle.status === "planifiee" && shuttle.transits.length ? ` · ${shuttle.transits.filter(row => row.loadedAt).length}/${shuttle.transits.length} chargée${shuttle.transits.length > 1 ? "s" : ""}` : ""}</span>
       {late.length > 0 && shuttle.status === "planifiee" && <span className="flex items-center gap-1 font-semibold text-amber-500"><AlertTriangle size={12} />{late.length} après échéance</span>}
     </span>
   </button>;
@@ -149,6 +149,7 @@ function ShuttleDetail({ shuttle, unassigned, canUpdate, onClose, onOpenRequest 
   const deliver = useMutation(api.meslogisticShuttles.deliverShuttle);
   const updateShuttle = useMutation(api.meslogisticShuttles.updateShuttle);
   const deleteShuttle = useMutation(api.meslogisticShuttles.deleteShuttle);
+  const setLoaded = useMutation(api.meslogisticShuttles.setLoaded);
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const [delivering, setDelivering] = useState<Set<string>>(new Set());
   const [editing, setEditing] = useState(false);
@@ -163,6 +164,8 @@ function ShuttleDetail({ shuttle, unassigned, canUpdate, onClose, onOpenRequest 
   const candidates = useMemo(() => unassigned.map(request => ({ request, ...compatibility(request, shuttle.transits) })).sort((a, b) => b.score - a.score || (a.request.dueDate ?? "9999").localeCompare(b.request.dueDate ?? "9999")), [unassigned, shuttle.transits]);
   const previewStops = picked.size ? stopsOf([...shuttle.transits, ...unassigned.filter(row => picked.has(row._id))]) : null;
   const pendingDelivery = shuttle.transits.filter(row => row.status === "en_transit");
+  const loadedCount = shuttle.transits.filter(row => row.loadedAt).length;
+  const allLoaded = shuttle.transits.length > 0 && loadedCount === shuttle.transits.length;
 
   async function run(action: () => Promise<unknown>, after?: () => void) {
     setBusy(true); setError("");
@@ -186,7 +189,15 @@ function ShuttleDetail({ shuttle, unassigned, canUpdate, onClose, onOpenRequest 
           {index < steps.length - 1 && <span className="h-px flex-1 bg-[var(--crm-border)]" />}
         </li>)}</ol>
         {stops.length > 0 && <div className="mt-5"><p className="text-xs font-semibold uppercase tracking-[0.14em] text-zinc-500">Tournée</p><Stops stops={stops} className="mt-1.5 text-lg font-bold" /></div>}
-        {canUpdate && planned && <div className="mt-5 flex flex-wrap items-center gap-3"><Button disabled={busy || !shuttle.transits.length} onClick={() => void run(() => depart({ shuttleId: shuttle._id }))}><Truck size={16} />Départ de la navette</Button><span className="text-xs text-zinc-500">{shuttle.transits.length ? `Les ${shuttle.transits.length} demandes passent « En transit ».` : "Ajoutez d’abord des demandes."}</span></div>}
+        {planned && shuttle.transits.length > 0 && <div className={`mt-5 rounded-xl border p-3 ${allLoaded ? "border-green-500/40 bg-green-500/10" : "border-amber-500/40 bg-amber-500/10"}`}>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="flex items-center gap-2 text-sm font-semibold"><ClipboardCheck size={16} />Chargement : {loadedCount}/{shuttle.transits.length} objet{shuttle.transits.length > 1 ? "s" : ""} confirmé{loadedCount > 1 ? "s" : ""}</p>
+            {canUpdate && !allLoaded && <Button size="sm" variant="secondary" disabled={busy} onClick={() => { if (window.confirm(`Confirmer que les ${shuttle.transits.length} objets sont bien chargés dans « ${shuttle.name} » ?`)) void run(() => setLoaded({ shuttleId: shuttle._id, loaded: true })); }}><Check size={14} />Tout est chargé</Button>}
+          </div>
+          <div className="mt-2 h-2 overflow-hidden rounded-full bg-[var(--crm-surface-3)]"><div className={`h-full rounded-full transition-all ${allLoaded ? "bg-green-500" : "bg-amber-500"}`} style={{ width: `${loadedCount / shuttle.transits.length * 100}%` }} /></div>
+          {!allLoaded && <p className="mt-2 text-xs text-zinc-500">Cochez « Chargé » sur chaque objet une fois dans le véhicule : le départ est possible quand tout est confirmé.</p>}
+        </div>}
+        {canUpdate && planned && <div className="mt-4 flex flex-wrap items-center gap-3"><Button disabled={busy || !allLoaded} onClick={() => void run(() => depart({ shuttleId: shuttle._id }))}><Truck size={16} />Départ de la navette</Button><span className="text-xs text-zinc-500">{!shuttle.transits.length ? "Ajoutez d’abord des demandes." : allLoaded ? `Les ${shuttle.transits.length} demandes passent « En transit ».` : `Encore ${shuttle.transits.length - loadedCount} objet${shuttle.transits.length - loadedCount > 1 ? "s" : ""} à confirmer.`}</span></div>}
         {canUpdate && enRoute && <div className="mt-5 flex flex-wrap items-center gap-3"><Button disabled={busy} onClick={() => void run(() => deliver({ shuttleId: shuttle._id }))}><PackageCheck size={16} />Arrivée · tout est livré</Button><span className="text-xs text-zinc-500">Les demandes deviennent « Disponibles à destination » (Bâtire prévenu).</span></div>}
         {shuttle.departedAt && <p className="mt-3 text-xs text-zinc-500">Partie le {new Date(shuttle.departedAt).toLocaleString("fr-FR")}{shuttle.completedAt ? ` · arrivée le ${new Date(shuttle.completedAt).toLocaleString("fr-FR")}` : ""}</p>}
       </section>
@@ -198,7 +209,8 @@ function ShuttleDetail({ shuttle, unassigned, canUpdate, onClose, onOpenRequest 
         {shuttle.transits.length === 0 ? <p className="rounded-xl bg-[var(--crm-surface-2)] p-4 text-sm text-zinc-500">Aucune demande pour l’instant. Ajoutez-en ci-dessous.</p> :
           <div className="grid gap-2 md:grid-cols-2">{shuttle.transits.map(row => <RequestChip key={row._id} request={row} onOpen={() => onOpenRequest(row._id)}>
             <div className="mt-2 flex items-center justify-between gap-2 border-t border-[var(--crm-border)] pt-2 text-xs">
-              <span className={row.status === "receptionnee" ? "font-semibold text-green-500" : row.status === "en_transit" ? "font-semibold" : "text-zinc-500"} style={row.status === "en_transit" ? { color: TRANSIT_COLOR } : undefined}>{row.status === "receptionnee" ? "Livrée" : row.status === "en_transit" ? "En transit" : "À charger"}</span>
+              {planned && row.status === "a_preparer" ? <label className={`flex items-center gap-1.5 font-semibold ${row.loadedAt ? "text-green-500" : "text-amber-500"}`} title={row.loadedAt ? `Confirmé par ${row.loadedBy ?? "?"} le ${new Date(row.loadedAt).toLocaleString("fr-FR")}` : undefined}><input type="checkbox" disabled={!canUpdate || busy} checked={Boolean(row.loadedAt)} onChange={event => void run(() => setLoaded({ shuttleId: shuttle._id, requestId: row._id, loaded: event.target.checked }))} />{row.loadedAt ? "Chargé" : "À charger"}</label>
+                : <span className={row.status === "receptionnee" ? "font-semibold text-green-500" : row.status === "en_transit" ? "font-semibold" : "text-zinc-500"} style={row.status === "en_transit" ? { color: TRANSIT_COLOR } : undefined}>{row.status === "receptionnee" ? "Livrée" : row.status === "en_transit" ? "En transit" : "À charger"}</span>}
               {canUpdate && planned && <button type="button" disabled={busy} onClick={() => void run(() => removeRequest({ requestId: row._id }))} className="flex items-center gap-1 text-zinc-500 hover:text-red-500"><X size={13} />Retirer</button>}
               {canUpdate && enRoute && row.status === "en_transit" && <label className="flex items-center gap-1.5"><input type="checkbox" checked={delivering.has(row._id)} onChange={() => toggle(delivering, row._id, setDelivering)} />Livrée</label>}
             </div>
