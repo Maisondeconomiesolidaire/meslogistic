@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useState, type DragEvent, type ReactNode } from "react";
 import { useMutation, useQuery } from "convex/react";
-import { AlertTriangle, ArrowLeft, ArrowRight, Bus, CalendarClock, Check, ChevronLeft, ChevronRight, ClipboardCheck, ExternalLink, GripVertical, MapPin, PackageCheck, Plus, Search, Truck, X } from "lucide-react";
+import { AlertTriangle, ArrowLeft, ArrowRight, Bus, CalendarClock, Check, ChevronLeft, ChevronRight, ClipboardCheck, ExternalLink, GripVertical, MapPin, PackageCheck, Plus, Printer, Search, Trash2, Truck, X } from "lucide-react";
 import { api } from "../convex/_generated/api";
 import type { Id } from "../convex/_generated/dataModel";
 import { Thumb, TRANSIT_COLOR, shortDate } from "./components/crm/LogisticsCard";
@@ -11,6 +11,8 @@ import { ArticlePreview, RequestDetail } from "./RequestDetail";
 import { CARD_COLOR, NewShuttle, STATUS, Stops, errorText, stopsOf, type Shuttle } from "./ShuttleBoard";
 import { today } from "./TransferPlanning";
 import { LogisticsMap, SELECTED_COLOR } from "./LogisticsMap";
+import type { NavPlan } from "./shuttleRoute";
+import { printShuttle } from "./shuttlePrint";
 
 type Status = Shuttle["status"];
 /** Libellés de la page d'accueil, comme sur le kanban des navettes. */
@@ -34,14 +36,18 @@ export function Accueil({ canCreate, canUpdate, isDark }: { canCreate: boolean; 
   const [dragging, setDragging] = useState<string | null>(null);
   const [fullSheet, setFullSheet] = useState(false);
   const [openShuttleId, setOpenShuttleId] = useState<string | null>(null);
+  const [navPlan, setNavPlan] = useState<NavPlan | null>(null);
   const onPlace = useCallback((next: string | null) => setPlace(next), []);
 
   const active = useMemo(() => (requests ?? [])
     .filter(request => request.status === "a_preparer" || request.status === "en_transit")
     .sort((a, b) => (a.dueDate ?? "9999-12-31").localeCompare(b.dueDate ?? "9999-12-31") || a.createdAt - b.createdAt), [requests]);
+  // Liste de gauche : seulement les objets pas encore affectés à une navette.
+  // Un lieu choisi sur la carte ne garde que les objets qui s'y trouvent.
   const visible = useMemo(() => {
     const needle = search.trim().toLocaleLowerCase("fr-FR");
-    return active.filter(request => (!place || shortLocation(request.origin) === place || shortLocation(request.destination) === place)
+    return active.filter(request => !request.shuttleId
+      && (!place || (request.status === "a_preparer" && shortLocation(request.origin) === place))
       && (!needle || [request.title, request.reference, request.customerName, request.origin, request.destination].some(value => value?.toLocaleLowerCase("fr-FR").includes(needle))));
   }, [active, place, search]);
 
@@ -71,9 +77,9 @@ export function Accueil({ canCreate, canUpdate, isDark }: { canCreate: boolean; 
     {/* Carte + navettes */}
     <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-3">
       <section aria-label="Carte des demandes" className="relative min-h-[320px] flex-[3] overflow-hidden rounded-3xl border border-[var(--crm-border)] bg-[var(--crm-surface)]">
-        <LogisticsMap requests={active} selected={selected} place={place} onPlace={onPlace} isDark={isDark} shuttle={board.shuttles.find(shuttle => shuttle._id === openShuttleId) ?? null} />
+        <LogisticsMap requests={active} selected={selected} place={place} onPlace={onPlace} isDark={isDark} shuttle={board.shuttles.find(shuttle => shuttle._id === openShuttleId) ?? null} onPlan={setNavPlan} />
       </section>
-      <ShuttleSection shuttles={board.shuttles} openId={openShuttleId} setOpenId={setOpenShuttleId} dragging={dragging} canCreate={canCreate} canUpdate={canUpdate} onSelectRequest={id => setSelectedId(id)} selectedId={selectedId} />
+      <ShuttleSection shuttles={board.shuttles} openId={openShuttleId} setOpenId={setOpenShuttleId} dragging={dragging} canCreate={canCreate} canUpdate={canUpdate} onSelectRequest={id => setSelectedId(id)} selectedId={selectedId} navPlan={navPlan} />
     </div>
 
     {/* Fiche de la demande */}
@@ -126,8 +132,8 @@ function periodDays(view: View, cursor: string) {
 }
 
 /** Section du bas : le calendrier des navettes, ou la navette ouverte (même emplacement). */
-function ShuttleSection({ shuttles, openId, setOpenId, dragging, canCreate, canUpdate, onSelectRequest, selectedId }: {
-  shuttles: Shuttle[]; openId: string | null; setOpenId: (id: string | null) => void; dragging: string | null; canCreate: boolean; canUpdate: boolean; onSelectRequest: (id: string) => void; selectedId: string | null;
+function ShuttleSection({ shuttles, openId, setOpenId, dragging, canCreate, canUpdate, onSelectRequest, selectedId, navPlan }: {
+  shuttles: Shuttle[]; openId: string | null; setOpenId: (id: string | null) => void; dragging: string | null; canCreate: boolean; canUpdate: boolean; onSelectRequest: (id: string) => void; selectedId: string | null; navPlan: NavPlan | null;
 }) {
   const addRequests = useMutation(api.meslogisticShuttles.addRequests);
   const [view, setView] = useState<View>("semaine");
@@ -183,7 +189,7 @@ function ShuttleSection({ shuttles, openId, setOpenId, dragging, canCreate, canU
 
   return <section aria-label="Navettes" className="flex min-h-[340px] flex-[2] flex-col overflow-hidden rounded-3xl border border-[var(--crm-border)] bg-[var(--crm-surface)]">
     {error && <p role="alert" className="flex shrink-0 items-center justify-between gap-2 bg-red-500/10 px-4 py-2 text-sm text-red-500">{error}<button type="button" onClick={() => setError("")} aria-label="Fermer"><X size={14} /></button></p>}
-    {open ? <ShuttleInline shuttle={open} canUpdate={canUpdate} dragging={dragging} dropActive={dropTarget === open._id} dropProps={dropProps(open)} onBack={() => setOpenId(null)} onSelectRequest={onSelectRequest} selectedId={selectedId} onError={setError} /> : <>
+    {open ? <ShuttleInline shuttle={open} canUpdate={canUpdate} dragging={dragging} dropActive={dropTarget === open._id} dropProps={dropProps(open)} onBack={() => setOpenId(null)} onSelectRequest={onSelectRequest} selectedId={selectedId} onError={setError} navPlan={navPlan} /> : <>
       <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-[var(--crm-border)] px-4 py-2.5">
         {view === "jour" && returnView && <button type="button" onClick={() => { setView(returnView); setReturnView(null); }} className="flex items-center gap-1.5 rounded-lg px-2 py-1 text-sm font-semibold text-zinc-400 hover:bg-[var(--crm-surface-2)] hover:text-zinc-100"><ArrowLeft size={16} />{returnView === "mois" ? "Mois" : "Semaine"}</button>}
         <h2 className="mr-1 text-lg font-bold">Navettes</h2>
@@ -234,14 +240,15 @@ function ShuttleSection({ shuttles, openId, setOpenId, dragging, canCreate, canU
   </section>;
 }
 
-function ShuttleInline({ shuttle, canUpdate, dragging, dropActive, dropProps, onBack, onSelectRequest, selectedId, onError }: {
+function ShuttleInline({ shuttle, canUpdate, dragging, dropActive, dropProps, onBack, onSelectRequest, selectedId, onError, navPlan }: {
   shuttle: Shuttle; canUpdate: boolean; dragging: string | null; dropActive: boolean; dropProps: Record<string, unknown>;
-  onBack: () => void; onSelectRequest: (id: string) => void; selectedId: string | null; onError: (message: string) => void;
+  onBack: () => void; onSelectRequest: (id: string) => void; selectedId: string | null; onError: (message: string) => void; navPlan: NavPlan | null;
 }) {
   const removeRequest = useMutation(api.meslogisticShuttles.removeRequest);
   const setLoaded = useMutation(api.meslogisticShuttles.setLoaded);
   const depart = useMutation(api.meslogisticShuttles.departShuttle);
   const deliver = useMutation(api.meslogisticShuttles.deliverShuttle);
+  const deleteShuttle = useMutation(api.meslogisticShuttles.deleteShuttle);
   const [busy, setBusy] = useState(false);
   const planned = shuttle.status === "planifiee";
   const loaded = shuttle.transits.filter(row => row.loadedAt).length;
@@ -265,7 +272,11 @@ function ShuttleInline({ shuttle, canUpdate, dragging, dropActive, dropProps, on
         <p className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-zinc-400"><span className="flex items-center gap-1 capitalize"><CalendarClock size={13} />{longDate(shuttle.scheduledDate)}</span>{shuttle.origin && <span className="flex items-center gap-1"><MapPin size={13} />Départ : {shortLocation(shuttle.origin)}</span>}<Stops stops={stopsOf(shuttle.transits)} className="font-semibold text-zinc-300" /></p>
       </div>
       {planned && total > 0 && <span className={`flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold ${loaded === total ? "bg-green-500/15 text-green-500" : "bg-amber-500/15 text-amber-500"}`}><ClipboardCheck size={14} />{loaded}/{objets(total)} chargé{loaded > 1 ? "s" : ""}</span>}
-      <div className="ml-auto flex flex-wrap gap-2">{actions}</div>
+      <div className="ml-auto flex flex-wrap gap-2">
+        {actions}
+        <Button size="sm" variant="secondary" onClick={() => printShuttle(shuttle, navPlan)} title={navPlan ? "Feuille de route : arrêts, heures d’arrivée et objets" : "Itinéraire en cours de calcul : l’impression n’aura pas les heures"}><Printer size={14} />Imprimer</Button>
+        {canUpdate && planned && <Button size="sm" variant="danger" disabled={busy} onClick={() => { if (window.confirm(`Supprimer la navette « ${shuttle.name} » ? Ses demandes reviendront dans la liste à planifier.`)) void run(() => deleteShuttle({ shuttleId: shuttle._id }).then(onBack)); }}><Trash2 size={14} />Supprimer</Button>}
+      </div>
     </div>
     <div className="min-h-0 flex-1 overflow-auto p-3">
       {planned && canUpdate && <div className={`mb-3 flex items-center justify-center gap-2 rounded-2xl border-2 border-dashed p-4 text-sm font-semibold transition-colors ${dropActive ? "border-brand-500 bg-brand-500/15 text-brand-500" : dragging ? "border-brand-500/60 text-brand-500" : "border-[var(--crm-border)] text-zinc-500"}`}><GripVertical size={16} />Glissez ici des demandes de la liste de gauche</div>}

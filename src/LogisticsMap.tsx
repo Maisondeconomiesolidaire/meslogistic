@@ -67,10 +67,12 @@ const lineFeature = (coordinates: LngLat[], properties: Record<string, unknown>)
  * départ) et le tracé routier de chaque liaison. Orange : objets en transit ;
  * bleu : objets à planifier. La demande sélectionnée est surlignée en violet.
  */
-export function LogisticsMap({ requests, selected, place, onPlace, isDark, shuttle }: {
+export function LogisticsMap({ requests, selected, place, onPlace, isDark, shuttle, onPlan }: {
   requests: Request[]; selected?: Request | null; place: string | null; onPlace: (place: string | null) => void; isDark: boolean;
   /** Navette ouverte : la carte passe en mode navigation. */
   shuttle?: Shuttle | null;
+  /** Reçoit l'itinéraire calculé de la navette ouverte (pour l'impression). */
+  onPlan?: (plan: NavPlan | null) => void;
 }) {
   const container = useRef<HTMLDivElement>(null);
   const mapRef = useRef<mapboxgl.Map | null>(null);
@@ -122,6 +124,9 @@ export function LogisticsMap({ requests, selected, place, onPlace, isDark, shutt
       .finally(() => { if (!cancelled) setPlanning(false); });
     return () => { cancelled = true; };
   }, [navKey]);
+  const onPlanRef = useRef(onPlan);
+  onPlanRef.current = onPlan;
+  useEffect(() => { onPlanRef.current?.(plan); }, [plan]);
   const navMode = Boolean(shuttle);
 
   // Création de la carte, une seule fois.
