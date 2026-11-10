@@ -62,7 +62,10 @@ export function LogisticsMap({ requests, selected, place, onPlace, isDark }: {
   const mapRef = useRef<mapboxgl.Map | null>(null);
   const markers = useRef<mapboxgl.Marker[]>([]);
   const fitted = useRef(false);
-  const [ready, setReady] = useState(false);
+  // Incrémenté à chaque chargement de style (thème) : les tracés sont alors redessinés.
+  const [ready, setReady] = useState(0);
+  const styleUrl = isDark ? "mapbox://styles/mapbox/dark-v11" : "mapbox://styles/mapbox/light-v11";
+  const appliedStyle = useRef(styleUrl);
   const [coords, setCoords] = useState<Record<string, LngLat>>(() => Object.fromEntries(Object.entries(SITES).map(([name, site]) => [name, site.coords])));
   const [roads, setRoads] = useState<Record<string, LngLat[]>>({});
 
@@ -85,25 +88,35 @@ export function LogisticsMap({ requests, selected, place, onPlace, isDark }: {
     return { places, links };
   }, [requests]);
 
-  // Création de la carte (recréée au changement de thème).
+  // Création de la carte, une seule fois.
   useEffect(() => {
     if (!TOKEN || !container.current) return;
     mapboxgl.accessToken = TOKEN;
-    const map = new mapboxgl.Map({ container: container.current, style: isDark ? "mapbox://styles/mapbox/dark-v11" : "mapbox://styles/mapbox/light-v11", center: [1.92, 49.45], zoom: 9.4, attributionControl: false });
+    const map = new mapboxgl.Map({ container: container.current, style: appliedStyle.current, center: [1.92, 49.45], zoom: 9.4, attributionControl: false });
     map.addControl(new mapboxgl.NavigationControl({ showCompass: false }), "top-left");
     map.addControl(new mapboxgl.AttributionControl({ compact: true }), "bottom-right");
-    map.on("load", () => {
+    // « style.load » : au premier chargement puis à chaque changement de thème.
+    map.on("style.load", () => {
+      if (map.getSource("links")) return;
       map.addSource("links", { type: "geojson", data: emptyCollection });
       map.addLayer({ id: "links", type: "line", source: "links", layout: { "line-cap": "round", "line-join": "round" }, paint: { "line-color": ["get", "color"], "line-width": ["get", "width"], "line-opacity": 0.8 } });
       map.addSource("selected", { type: "geojson", data: emptyCollection });
       map.addLayer({ id: "selected", type: "line", source: "selected", layout: { "line-cap": "round", "line-join": "round" }, paint: { "line-color": SELECTED_COLOR, "line-width": 7, "line-opacity": 0.95 } });
-      setReady(true);
+      setReady(version => version + 1);
     });
     const observer = new ResizeObserver(() => map.resize());
     observer.observe(container.current);
     mapRef.current = map;
-    return () => { observer.disconnect(); markers.current.forEach(marker => marker.remove()); markers.current = []; map.remove(); mapRef.current = null; fitted.current = false; setReady(false); };
-  }, [isDark]);
+    return () => { observer.disconnect(); markers.current.forEach(marker => marker.remove()); markers.current = []; map.remove(); mapRef.current = null; fitted.current = false; setReady(0); };
+  }, []);
+
+  // Thème de l'app : clair ou sombre, sans recréer la carte.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || appliedStyle.current === styleUrl) return;
+    appliedStyle.current = styleUrl;
+    map.setStyle(styleUrl);
+  }, [styleUrl]);
 
   // Géocodage des lieux inconnus.
   useEffect(() => {
@@ -164,7 +177,7 @@ export function LogisticsMap({ requests, selected, place, onPlace, isDark }: {
     if (!fitted.current && markers.current.length > 1) {
       const bounds = new mapboxgl.LngLatBounds();
       markers.current.forEach(marker => bounds.extend(marker.getLngLat()));
-      map.fitBounds(bounds, { padding: 70, maxZoom: 11, duration: 0 });
+      map.fitBounds(bounds, { padding: 90, maxZoom: 11, duration: 0 });
       fitted.current = true;
     }
   }, [ready, places, coords, place, selectedKey, onPlace]);
@@ -188,10 +201,10 @@ export function LogisticsMap({ requests, selected, place, onPlace, isDark }: {
     return () => { cancelled = true; };
   }, [ready, selectedKey, coords]);
 
-  if (!TOKEN) return <div className="flex h-full flex-col items-center justify-center gap-2 text-sm text-zinc-500"><MapPinOff size={28} />Carte indisponible : VITE_MAPBOX_ACCESS_TOKEN manquant.</div>;
-  return <div className="relative h-full w-full">
-    <div ref={container} className="absolute inset-0" />
-    <div className="pointer-events-none absolute bottom-2 left-2 flex flex-wrap gap-2 text-[11px] font-semibold">
+  if (!TOKEN) return <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-sm text-zinc-500"><MapPinOff size={28} />Carte indisponible : VITE_MAPBOX_ACCESS_TOKEN manquant.</div>;
+  return <div className="absolute inset-0">
+    <div ref={container} className="h-full w-full" />
+    <div className="pointer-events-none absolute right-2 top-2 flex flex-wrap justify-end gap-2 text-[11px] font-semibold">
       {[[ON_SITE_COLOR, "À expédier"], [TRANSIT_COLOR, "En transit"], [SELECTED_COLOR, "Sélection"]].map(([color, label]) => <span key={label} className="flex items-center gap-1.5 rounded-full bg-black/70 px-2.5 py-1 text-white"><span className="h-2 w-4 rounded-full" style={{ backgroundColor: color }} />{label}</span>)}
     </div>
   </div>;
