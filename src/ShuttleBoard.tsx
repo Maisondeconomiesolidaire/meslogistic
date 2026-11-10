@@ -16,19 +16,19 @@ import { shortLocation } from "./Demandes";
 import { RequestDetail } from "./RequestDetail";
 import { today } from "./TransferPlanning";
 
-type Board = NonNullable<ReturnType<typeof useQuery<typeof api.meslogisticShuttles.board>>>;
-type Shuttle = Board["shuttles"][number];
-type Transit = Board["unassigned"][number];
+export type Board = NonNullable<ReturnType<typeof useQuery<typeof api.meslogisticShuttles.board>>>;
+export type Shuttle = Board["shuttles"][number];
+export type Transit = Board["unassigned"][number];
 type Status = Shuttle["status"];
 
-const STATUS: Record<Status, { label: string; color: string }> = {
+export const STATUS: Record<Status, { label: string; color: string }> = {
   planifiee: { label: "Planifiée", color: "#3b82f6" },
   en_route: { label: "En route", color: TRANSIT_COLOR },
   terminee: { label: "Terminée", color: "#10b981" },
 };
 const UNPLANNED_COLOR = "#a855f7";
 
-const errorText = (caught: unknown) => {
+export const errorText = (caught: unknown) => {
   const data = (caught as { data?: unknown })?.data;
   if (typeof data === "string") return data;
   return caught instanceof Error ? caught.message.replace(/^.*(ConvexError|Uncaught Error):\s*/s, "").split("\n")[0] : "Opération impossible.";
@@ -36,13 +36,13 @@ const errorText = (caught: unknown) => {
 const longDate = (iso: string) => new Date(`${iso}T12:00:00`).toLocaleDateString("fr-FR", { weekday: "long", day: "numeric", month: "long" });
 
 /** Ordre des arrêts sur l'axe Comptoir C — Solidarium — Esspace 150 (sinon dans l'ordre des demandes). */
-function stopsOf(transits: { origin: string; destination: string }[]) {
+export function stopsOf(transits: { origin: string; destination: string }[]) {
   if (!transits.length) return [];
   return tourStops(transits) ?? [...new Set(transits.flatMap(row => [row.origin, row.destination]))];
 }
 
 /** Compatibilité d'une demande avec une navette, d'après les lieux. */
-function compatibility(request: Transit, transits: Transit[]): { score: number; label?: string } {
+export function compatibility(request: Transit, transits: Transit[]): { score: number; label?: string } {
   if (!transits.length) return { score: 0 };
   if (transits.some(row => onTheWay(row, request))) return { score: 4, label: "sur le chemin" };
   if (transits.some(row => onTheWay(request, row))) return { score: 3, label: "prolonge la tournée" };
@@ -53,7 +53,7 @@ function compatibility(request: Transit, transits: Transit[]): { score: number; 
   return { score: 0 };
 }
 
-const Stops = ({ stops, className = "" }: { stops: string[]; className?: string }) => stops.length ? <p className={`flex flex-wrap items-center gap-1 ${className}`}>{stops.map((stop, index) => <span key={`${stop}-${index}`} className="inline-flex items-center gap-1">{index > 0 && <ArrowRight size={12} className="shrink-0 opacity-60" />}<span>{shortLocation(stop)}</span></span>)}</p> : null;
+export const Stops = ({ stops, className = "" }: { stops: string[]; className?: string }) => stops.length ? <p className={`flex flex-wrap items-center gap-1 ${className}`}>{stops.map((stop, index) => <span key={`${stop}-${index}`} className="inline-flex items-center gap-1">{index > 0 && <ArrowRight size={12} className="shrink-0 opacity-60" />}<span>{shortLocation(stop)}</span></span>)}</p> : null;
 
 /**
  * Demandes v2 : on raisonne en navettes. Une navette regroupe des demandes ;
@@ -96,7 +96,7 @@ export function ShuttleBoard({ canCreate, canUpdate }: { canCreate: boolean; can
   </div>;
 }
 
-function RequestChip({ request, onOpen, children }: { request: Transit; onOpen?: () => void; children?: ReactNode }) {
+export function RequestChip({ request, onOpen, children }: { request: Transit; onOpen?: () => void; children?: ReactNode }) {
   const late = request.dueDate && request.dueDate < today();
   return <div className="rounded-2xl bg-[var(--crm-surface)] p-3 text-sm ring-1 ring-[var(--crm-border)]">
     <button type="button" onClick={onOpen} className="block w-full text-left">
@@ -108,7 +108,7 @@ function RequestChip({ request, onOpen, children }: { request: Transit; onOpen?:
   </div>;
 }
 
-function ShuttleCard({ shuttle, onOpen }: { shuttle: Shuttle; onOpen: () => void }) {
+export function ShuttleCard({ shuttle, onOpen }: { shuttle: Shuttle; onOpen: () => void }) {
   const late = shuttle.transits.filter(row => row.dueDate && row.dueDate < shuttle.scheduledDate);
   const delivered = shuttle.transits.filter(row => row.status === "receptionnee").length;
   return <button type="button" onClick={onOpen} className="block w-full rounded-[22px] bg-[var(--crm-surface)] p-3.5 text-left ring-1 ring-[var(--crm-border)] transition hover:ring-brand-500/60" style={{ borderLeft: `5px solid ${STATUS[shuttle.status].color}` }}>
@@ -121,7 +121,7 @@ function ShuttleCard({ shuttle, onOpen }: { shuttle: Shuttle; onOpen: () => void
   </button>;
 }
 
-function NewShuttle({ onClose, onCreated }: { onClose: () => void; onCreated: (id: Id<"mlShuttles">) => void }) {
+export function NewShuttle({ onClose, onCreated }: { onClose: () => void; onCreated: (id: Id<"mlShuttles">) => void }) {
   const create = useMutation(api.meslogistic.createShuttle);
   const [name, setName] = useState("");
   const [date, setDate] = useState("");
@@ -142,7 +142,7 @@ function NewShuttle({ onClose, onCreated }: { onClose: () => void; onCreated: (i
   </Drawer>;
 }
 
-function ShuttleDetail({ shuttle, unassigned, canUpdate, onClose, onOpenRequest }: { shuttle: Shuttle; unassigned: Transit[]; canUpdate: boolean; onClose: () => void; onOpenRequest: (id: string) => void }) {
+export function ShuttleDetail({ shuttle, unassigned, canUpdate, onClose, onOpenRequest }: { shuttle: Shuttle; unassigned: Transit[]; canUpdate: boolean; onClose: () => void; onOpenRequest: (id: string) => void }) {
   const addRequests = useMutation(api.meslogisticShuttles.addRequests);
   const removeRequest = useMutation(api.meslogisticShuttles.removeRequest);
   const depart = useMutation(api.meslogisticShuttles.departShuttle);
