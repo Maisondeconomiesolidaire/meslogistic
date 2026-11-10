@@ -298,7 +298,7 @@ function ShuttleInline({ shuttle, canUpdate, dragging, dropActive, dropProps, on
       {planned && total > 0 && <span className={`flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold ${loaded === total ? "bg-green-500/15 text-green-500" : "bg-amber-500/15 text-amber-500"}`}><ClipboardCheck size={14} />{loaded}/{objets(total)} chargé{loaded > 1 ? "s" : ""}</span>}
       <div className="ml-auto flex flex-wrap gap-2">
         {actions}
-        <Button size="sm" variant="secondary" onClick={() => printShuttle(shuttle, navPlan)} title={navPlan ? "Feuille de route : arrêts, heures d’arrivée et objets" : "Itinéraire en cours de calcul : l’impression n’aura pas les heures"}><Printer size={14} />Imprimer</Button>
+        <Button size="sm" variant="secondary" onClick={() => printShuttle(shuttle, navPlan)} title="Feuille de route : départ, arrêts, arrivée et objets"><Printer size={14} />Imprimer</Button>
         {canUpdate && planned && <Button size="sm" variant="danger" disabled={busy} onClick={() => setConfirm({
           title: "Supprimer la navette ?", confirmLabel: "Supprimer", icon: <Trash2 size={15} />, danger: true,
           body: <p>« {shuttle.name} » sera supprimée. {total ? `Ses ${objets(total)} reviendront dans la liste à planifier.` : ""}</p>,
