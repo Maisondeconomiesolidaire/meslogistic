@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useState, type DragEvent, type ReactNode } from "react";
 import { useMutation, useQuery } from "convex/react";
-import { AlertTriangle, ArrowLeft, ArrowRight, Bus, CalendarClock, Check, ClipboardCheck, ExternalLink, GripVertical, MapPin, PackageCheck, Plus, Search, Truck, X } from "lucide-react";
+import { AlertTriangle, ArrowLeft, ArrowRight, Bus, CalendarClock, Check, ChevronLeft, ChevronRight, ClipboardCheck, ExternalLink, GripVertical, MapPin, PackageCheck, Plus, Search, Truck, X } from "lucide-react";
 import { api } from "../convex/_generated/api";
 import type { Id } from "../convex/_generated/dataModel";
 import { Thumb, TRANSIT_COLOR, shortDate } from "./components/crm/LogisticsCard";
@@ -8,14 +8,13 @@ import { Button } from "./components/ui/Button";
 import { FullSpinner } from "./components/ui/Spinner";
 import { shortLocation, statusLabel, type Request } from "./Demandes";
 import { ArticlePreview, RequestDetail } from "./RequestDetail";
-import { NewShuttle, STATUS, Stops, errorText, stopsOf, type Shuttle } from "./ShuttleBoard";
+import { CARD_COLOR, NewShuttle, STATUS, Stops, errorText, stopsOf, type Shuttle } from "./ShuttleBoard";
 import { today } from "./TransferPlanning";
 import { LogisticsMap, SELECTED_COLOR } from "./LogisticsMap";
 
 type Status = Shuttle["status"];
 /** Libellés de la page d'accueil, comme sur le kanban des navettes. */
 const SHUTTLE_LABEL: Record<Status, string> = { planifiee: "Nouveau", en_route: "En transit", terminee: "Terminée" };
-const FILTERS: { key: "tous" | Status; label: string }[] = [{ key: "tous", label: "Toutes" }, { key: "planifiee", label: "Nouveau" }, { key: "en_route", label: "En transit" }, { key: "terminee", label: "Terminée" }];
 const DRAG_TYPE = "application/x-meslogistic-request";
 const objets = (count: number) => `${count} objet${count > 1 ? "s" : ""}`;
 const longDate = (iso: string) => new Date(`${iso}T12:00:00`).toLocaleDateString("fr-FR", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
@@ -104,69 +103,132 @@ function RequestRow({ request: r, shuttleName, selected, draggable, onClick, onD
   </button>;
 }
 
-/** Section du bas : la liste des navettes, ou la navette ouverte (même emplacement). */
+/** Date locale au format AAAA-MM-JJ. */
+const isoDay = (date: Date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+const parseDay = (iso: string) => new Date(`${iso}T12:00:00`);
+const addDays = (iso: string, days: number) => { const date = parseDay(iso); date.setDate(date.getDate() + days); return isoDay(date); };
+/** Lundi de la semaine du jour donné. */
+const mondayOf = (iso: string) => addDays(iso, -((parseDay(iso).getDay() + 6) % 7));
+const WEEKDAYS = ["Lun", "Mar", "Mer", "Jeu", "Ven", "Sam", "Dim"];
+type View = "mois" | "semaine" | "jour";
+const VIEWS: { key: View; label: string }[] = [{ key: "mois", label: "Mois" }, { key: "semaine", label: "Semaine" }, { key: "jour", label: "Jour" }];
+
+/** Jours affichés : la journée, la semaine (lundi → dimanche) ou le mois en semaines complètes. */
+function periodDays(view: View, cursor: string) {
+  if (view === "jour") return [cursor];
+  if (view === "semaine") return Array.from({ length: 7 }, (_, index) => addDays(mondayOf(cursor), index));
+  const start = parseDay(`${cursor.slice(0, 7)}-01`);
+  const lead = (start.getDay() + 6) % 7;
+  const length = new Date(start.getFullYear(), start.getMonth() + 1, 0).getDate();
+  const first = addDays(isoDay(start), -lead);
+  return Array.from({ length: Math.ceil((lead + length) / 7) * 7 }, (_, index) => addDays(first, index));
+}
+
+/** Section du bas : le calendrier des navettes, ou la navette ouverte (même emplacement). */
 function ShuttleSection({ shuttles, dragging, canCreate, canUpdate, onSelectRequest, selectedId }: {
   shuttles: Shuttle[]; dragging: string | null; canCreate: boolean; canUpdate: boolean; onSelectRequest: (id: string) => void; selectedId: string | null;
 }) {
   const addRequests = useMutation(api.meslogisticShuttles.addRequests);
   const [openId, setOpenId] = useState<string | null>(null);
-  const [filter, setFilter] = useState<"tous" | Status>("tous");
+  const [view, setView] = useState<View>("mois");
+  const [returnView, setReturnView] = useState<View | null>(null);
+  const [cursor, setCursor] = useState(() => isoDay(new Date()));
   const [creating, setCreating] = useState(false);
   const [dropTarget, setDropTarget] = useState<string | null>(null);
   const [error, setError] = useState("");
   const open = shuttles.find(shuttle => shuttle._id === openId);
-  const rank: Record<Status, number> = { en_route: 0, planifiee: 1, terminee: 2 };
-  const rows = shuttles.filter(shuttle => filter === "tous" || shuttle.status === filter)
-    .sort((a, b) => rank[a.status] - rank[b.status] || (a.status === "terminee" ? b.scheduledDate.localeCompare(a.scheduledDate) : a.scheduledDate.localeCompare(b.scheduledDate)));
+  const todayIso = isoDay(new Date());
+
+  const byDay = useMemo(() => {
+    const map = new Map<string, Shuttle[]>();
+    for (const shuttle of shuttles) map.set(shuttle.scheduledDate, [...(map.get(shuttle.scheduledDate) ?? []), shuttle]);
+    const rank: Record<Status, number> = { en_route: 0, planifiee: 1, terminee: 2 };
+    for (const list of map.values()) list.sort((a, b) => rank[a.status] - rank[b.status] || a.name.localeCompare(b.name, "fr"));
+    return map;
+  }, [shuttles]);
 
   async function drop(shuttle: Shuttle, event: DragEvent) {
-    event.preventDefault(); setDropTarget(null);
+    event.preventDefault(); event.stopPropagation(); setDropTarget(null);
     const requestId = event.dataTransfer.getData(DRAG_TYPE);
     if (!requestId || shuttle.status !== "planifiee") return;
     setError("");
     try { await addRequests({ shuttleId: shuttle._id, requestIds: [requestId as Id<"mlRequests">] }); } catch (caught) { setError(errorText(caught)); }
   }
   const dropProps = (shuttle: Shuttle) => shuttle.status === "planifiee" && canUpdate ? {
-    onDragOver: (event: DragEvent) => { if (!event.dataTransfer.types.includes(DRAG_TYPE)) return; event.preventDefault(); event.dataTransfer.dropEffect = "move"; setDropTarget(shuttle._id); },
+    onDragOver: (event: DragEvent) => { if (!event.dataTransfer.types.includes(DRAG_TYPE)) return; event.preventDefault(); event.stopPropagation(); event.dataTransfer.dropEffect = "move"; setDropTarget(shuttle._id); },
     onDragLeave: () => setDropTarget(current => current === shuttle._id ? null : current),
     onDrop: (event: DragEvent) => void drop(shuttle, event),
   } : {};
 
-  return <section aria-label="Navettes" className="flex min-h-[300px] flex-[2] flex-col overflow-hidden rounded-3xl border border-[var(--crm-border)] bg-[var(--crm-surface)]">
+  const days = periodDays(view, cursor);
+  const title = view === "mois" ? parseDay(`${cursor.slice(0, 7)}-01`).toLocaleDateString("fr-FR", { month: "long", year: "numeric" })
+    : view === "semaine" ? `${parseDay(days[0]).toLocaleDateString("fr-FR", { day: "numeric", month: "short" })} – ${parseDay(days[6]).toLocaleDateString("fr-FR", { day: "numeric", month: "short", year: "numeric" })}`
+    : longDate(cursor);
+  const shift = (direction: number) => setCursor(current => {
+    if (view === "jour") return addDays(current, direction);
+    if (view === "semaine") return addDays(current, 7 * direction);
+    const date = parseDay(`${current.slice(0, 7)}-01`); date.setMonth(date.getMonth() + direction); return isoDay(date);
+  });
+  const openDay = (day: string) => { setReturnView(view); setCursor(day); setView("jour"); };
+
+  const chip = (shuttle: Shuttle, large: boolean) => {
+    const target = dropTarget === shuttle._id;
+    const droppable = Boolean(dragging) && shuttle.status === "planifiee" && canUpdate;
+    return <button key={shuttle._id} type="button" {...dropProps(shuttle)} onClick={event => { event.stopPropagation(); setOpenId(shuttle._id); }} title={`${shuttle.name} · ${SHUTTLE_LABEL[shuttle.status]} · ${objets(shuttle.transits.length)}`}
+      className={`flex w-full min-w-0 shrink-0 items-center gap-1.5 rounded-md text-left font-semibold text-zinc-950 ${large ? "px-2.5 py-1.5 text-xs" : "px-1.5 py-0.5 text-[11px]"} ${target ? "ring-2 ring-white" : droppable ? "ring-2 ring-brand-500" : "hover:brightness-110"}`}
+      style={{ backgroundColor: CARD_COLOR[shuttle.status] }}>
+      <span className="min-w-0 flex-1 truncate">{shuttle.name}</span><span className="shrink-0 tabular-nums opacity-70">{shuttle.transits.length}</span>
+    </button>;
+  };
+
+  return <section aria-label="Navettes" className="flex min-h-[340px] flex-[2] flex-col overflow-hidden rounded-3xl border border-[var(--crm-border)] bg-[var(--crm-surface)]">
     {error && <p role="alert" className="flex shrink-0 items-center justify-between gap-2 bg-red-500/10 px-4 py-2 text-sm text-red-500">{error}<button type="button" onClick={() => setError("")} aria-label="Fermer"><X size={14} /></button></p>}
     {open ? <ShuttleInline shuttle={open} canUpdate={canUpdate} dragging={dragging} dropActive={dropTarget === open._id} dropProps={dropProps(open)} onBack={() => setOpenId(null)} onSelectRequest={onSelectRequest} selectedId={selectedId} onError={setError} /> : <>
-      <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-[var(--crm-border)] px-4 py-3">
-        <h2 className="mr-2 text-lg font-bold">Navettes</h2>
-        <div className="flex flex-wrap gap-1.5">{FILTERS.map(item => {
-          const count = item.key === "tous" ? shuttles.length : shuttles.filter(shuttle => shuttle.status === item.key).length;
-          const color = item.key === "tous" ? undefined : STATUS[item.key].color;
-          return <button key={item.key} type="button" onClick={() => setFilter(item.key)} className={`flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-semibold transition-colors ${filter === item.key ? "border-transparent bg-zinc-100 text-zinc-950" : "border-[var(--crm-border)] text-zinc-400 hover:text-zinc-100"}`}>{color && <span className="h-2 w-2 rounded-full" style={{ backgroundColor: color }} />}{item.label}<span className="tabular-nums opacity-70">{count}</span></button>;
-        })}</div>
-        {dragging && <span className="text-xs font-semibold text-brand-500">Déposez la demande sur une navette « Nouveau »</span>}
-        {canCreate && <Button size="sm" className="ml-auto" onClick={() => setCreating(true)}><Plus size={15} />Nouvelle navette</Button>}
+      <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-[var(--crm-border)] px-4 py-2.5">
+        {view === "jour" && returnView && <button type="button" onClick={() => { setView(returnView); setReturnView(null); }} className="flex items-center gap-1.5 rounded-lg px-2 py-1 text-sm font-semibold text-zinc-400 hover:bg-[var(--crm-surface-2)] hover:text-zinc-100"><ArrowLeft size={16} />{returnView === "mois" ? "Mois" : "Semaine"}</button>}
+        <h2 className="mr-1 text-lg font-bold">Navettes</h2>
+        <div className="flex items-center gap-1">
+          <button type="button" onClick={() => shift(-1)} aria-label="Période précédente" className="rounded-lg p-1.5 text-zinc-400 hover:bg-[var(--crm-surface-2)] hover:text-zinc-100"><ChevronLeft size={18} /></button>
+          <button type="button" onClick={() => setCursor(todayIso)} className="rounded-lg border border-[var(--crm-border)] px-2.5 py-1 text-xs font-semibold text-zinc-300 hover:bg-[var(--crm-surface-2)]">Aujourd’hui</button>
+          <button type="button" onClick={() => shift(1)} aria-label="Période suivante" className="rounded-lg p-1.5 text-zinc-400 hover:bg-[var(--crm-surface-2)] hover:text-zinc-100"><ChevronRight size={18} /></button>
+        </div>
+        <p className="text-sm font-semibold capitalize">{title}</p>
+        <div className="ml-auto flex items-center gap-2">
+          <div className="flex rounded-full bg-[var(--crm-surface-2)] p-0.5 text-xs font-semibold">{VIEWS.map(item => <button key={item.key} type="button" onClick={() => { setReturnView(null); setView(item.key); }} className={`rounded-full px-3 py-1 transition-colors ${view === item.key ? "bg-zinc-100 text-zinc-950" : "text-zinc-400 hover:text-zinc-100"}`}>{item.label}</button>)}</div>
+          {canCreate && <Button size="sm" onClick={() => setCreating(true)}><Plus size={15} />Nouvelle navette</Button>}
+        </div>
       </div>
-      <div className="min-h-0 flex-1 overflow-auto">
-        {rows.length === 0 ? <p className="p-6 text-sm text-zinc-500">Aucune navette.</p> :
-          <table className="w-full min-w-[720px] text-sm">
-            <thead className="sticky top-0 z-10 bg-[var(--crm-surface)] text-left text-xs text-zinc-500"><tr className="border-b border-[var(--crm-border)]">
-              <th className="px-4 py-2 font-medium">Statut</th><th className="px-3 py-2 font-medium">Navette</th><th className="px-3 py-2 font-medium">Date</th><th className="px-3 py-2 font-medium">Départ</th><th className="px-3 py-2 font-medium">Tournée</th><th className="px-3 py-2 font-medium">Objets</th>
-            </tr></thead>
-            <tbody>{rows.map(shuttle => {
-              const loaded = shuttle.transits.filter(row => row.loadedAt).length;
-              const target = dropTarget === shuttle._id;
-              const droppable = Boolean(dragging) && shuttle.status === "planifiee" && canUpdate;
-              return <tr key={shuttle._id} {...dropProps(shuttle)} onClick={() => setOpenId(shuttle._id)}
-                className={`cursor-pointer border-b border-[var(--crm-border)] transition-colors ${target ? "bg-brand-500/20" : droppable ? "bg-brand-500/5" : "hover:bg-[var(--crm-surface-2)]"}`}>
-                <td className="px-4 py-2.5"><span className="flex items-center gap-2 font-semibold"><span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: STATUS[shuttle.status].color }} />{SHUTTLE_LABEL[shuttle.status]}</span></td>
-                <td className="px-3 py-2.5 font-semibold">{shuttle.name}</td>
-                <td className="whitespace-nowrap px-3 py-2.5 tabular-nums text-zinc-400">{shortDate(shuttle.scheduledDate)}</td>
-                <td className="px-3 py-2.5 text-zinc-400">{shuttle.origin ? shortLocation(shuttle.origin) : "—"}</td>
-                <td className="px-3 py-2.5"><Stops stops={stopsOf(shuttle.transits)} className="text-xs text-zinc-400" /></td>
-                <td className="px-3 py-2.5"><span className="flex items-center gap-2"><span className="flex -space-x-2">{shuttle.transits.slice(0, 4).map(row => <Thumb key={row._id} src={row.photoUrl} size={26} className="rounded-lg bg-[var(--crm-surface-3)] ring-2 ring-[var(--crm-surface)]" />)}</span><span className="whitespace-nowrap text-xs text-zinc-400">{shuttle.transits.length}{shuttle.status === "planifiee" && shuttle.transits.length ? ` · ${loaded} chargé${loaded > 1 ? "s" : ""}` : ""}</span></span></td>
-              </tr>;
-            })}</tbody>
-          </table>}
-      </div>
+      {dragging && <p className="shrink-0 bg-brand-500/10 px-4 py-1 text-xs font-semibold text-brand-500">Déposez la demande sur une navette « Nouveau » (encadrée).</p>}
+
+      {view === "jour" ? <div className="min-h-0 flex-1 overflow-y-auto p-3">
+        {(byDay.get(cursor) ?? []).length === 0 ? <p className="p-3 text-sm text-zinc-500">Aucune navette prévue ce jour.</p> :
+          <ul className="grid gap-2 md:grid-cols-2 2xl:grid-cols-3">{(byDay.get(cursor) ?? []).map(shuttle => {
+            const loaded = shuttle.transits.filter(row => row.loadedAt).length;
+            const target = dropTarget === shuttle._id;
+            const droppable = Boolean(dragging) && shuttle.status === "planifiee" && canUpdate;
+            return <li key={shuttle._id}><button type="button" {...dropProps(shuttle)} onClick={() => setOpenId(shuttle._id)} className={`w-full rounded-2xl border p-3 text-left text-sm transition-colors ${target ? "border-brand-500 bg-brand-500/20" : droppable ? "border-brand-500/60 bg-brand-500/5" : "border-[var(--crm-border)] hover:bg-[var(--crm-surface-2)]"}`}>
+              <span className="flex items-center justify-between gap-2"><span className="truncate font-bold">{shuttle.name}</span><span className="flex shrink-0 items-center gap-1.5 text-xs font-semibold"><span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: STATUS[shuttle.status].color }} />{SHUTTLE_LABEL[shuttle.status]}</span></span>
+              <span className="mt-1 block text-xs text-zinc-400">{shuttle.origin ? `Départ : ${shortLocation(shuttle.origin)}` : "Départ non renseigné"}</span>
+              <Stops stops={stopsOf(shuttle.transits)} className="mt-1 text-xs font-semibold text-zinc-300" />
+              <span className="mt-2 flex items-center gap-2"><span className="flex -space-x-2">{shuttle.transits.slice(0, 5).map(row => <Thumb key={row._id} src={row.photoUrl} size={28} className="rounded-lg bg-[var(--crm-surface-3)] ring-2 ring-[var(--crm-surface)]" />)}</span><span className="text-xs text-zinc-400">{objets(shuttle.transits.length)}{shuttle.status === "planifiee" && shuttle.transits.length ? ` · ${loaded} chargé${loaded > 1 ? "s" : ""}` : ""}</span></span>
+            </button></li>;
+          })}</ul>}
+      </div> : <div className="flex min-h-0 flex-1 flex-col p-2">
+        <div className="grid shrink-0 grid-cols-7 pb-1 text-center text-[11px] font-semibold uppercase tracking-wide text-zinc-500">{WEEKDAYS.map((day, index) => <span key={day}>{view === "semaine" ? `${day} ${parseDay(days[index]).getDate()}` : day}</span>)}</div>
+        <div className="grid min-h-0 flex-1 grid-cols-7 gap-1" style={{ gridTemplateRows: `repeat(${days.length / 7}, minmax(0, 1fr))` }}>
+          {days.map(day => {
+            const list = byDay.get(day) ?? [];
+            const outside = view === "mois" && day.slice(0, 7) !== cursor.slice(0, 7);
+            const max = view === "semaine" ? 8 : 2;
+            return <div key={day} role="button" tabIndex={0} onClick={() => openDay(day)} onKeyDown={event => { if (event.key === "Enter") openDay(day); }} title="Voir les navettes du jour"
+              className={`flex min-h-0 cursor-pointer flex-col gap-0.5 overflow-hidden rounded-lg border p-1 transition-colors hover:bg-[var(--crm-surface-2)] ${day === todayIso ? "border-brand-500" : "border-[var(--crm-border)]"} ${outside ? "opacity-40" : ""}`}>
+              {view === "mois" && <span className={`shrink-0 self-end px-1.5 text-[11px] font-semibold tabular-nums ${day === todayIso ? "rounded-full bg-brand-500 text-white" : "text-zinc-400"}`}>{parseDay(day).getDate()}</span>}
+              {list.slice(0, max).map(shuttle => chip(shuttle, view === "semaine"))}
+              {list.length > max && <span className="shrink-0 px-1 text-[10px] font-semibold text-zinc-400">+{list.length - max} autre{list.length - max > 1 ? "s" : ""}</span>}
+            </div>;
+          })}
+        </div>
+      </div>}
     </>}
     {creating && <NewShuttle onClose={() => setCreating(false)} onCreated={id => { setCreating(false); setOpenId(id); }} />}
   </section>;
