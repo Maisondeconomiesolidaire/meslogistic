@@ -1,13 +1,12 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { useMutation, useQuery } from "convex/react";
-import { AlertTriangle, ArrowLeft, ArrowRight, Check, Info, Package, Plus } from "lucide-react";
+import { AlertTriangle, ArrowLeft, ArrowRight, Check, Info, Package, Plus, X } from "lucide-react";
 import { api } from "../convex/_generated/api";
 import type { Id } from "../convex/_generated/dataModel";
 import { PageHeader } from "./components/crm/PageHeader";
 import { shortDate } from "./components/crm/LogisticsCard";
 import { Button } from "./components/ui/Button";
 import { Input } from "./components/ui/Field";
-import { Drawer } from "./components/ui/Drawer";
 import { FullSpinner } from "./components/ui/Spinner";
 import { shortLocation } from "./Demandes";
 import { RequestDetail } from "./RequestDetail";
@@ -46,39 +45,42 @@ export function RouteMatrix({ canCreate, canUpdate }: { canCreate: boolean; canU
   // Objets déjà affectés à une navette pas encore terminée (planifiée ou en route).
   const activeTransits = (board?.shuttles ?? []).filter(shuttle => shuttle.status !== "terminee").flatMap(shuttle => shuttle.transits.filter(row => row.status !== "receptionnee").map(row => ({ ...row, shuttle })));
 
-  return <div className="flex min-h-screen flex-col">
+  const grid = { gridTemplateColumns: `minmax(84px, auto) repeat(${places.length}, minmax(0, 1fr))`, gridTemplateRows: `auto repeat(${places.length}, minmax(64px, 1fr))` };
+  return <div className="flex h-[calc(100dvh-3.5rem)] flex-col lg:h-dvh">
     <PageHeader title="Demandes v3" />
-    <div className="flex-1 overflow-auto p-4 sm:p-6">
-      {!board ? <FullSpinner label="Chargement des flux…" /> : <section className="rounded-3xl border border-[var(--crm-border)] bg-[var(--crm-surface)] p-4 sm:p-6">
-        <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
-          <h2 className="text-lg font-bold">Flux entre les sites</h2>
-          <p className="flex items-center gap-2 text-xs text-zinc-500"><span>Lignes : départ</span><ArrowRight size={12} /><span>Colonnes : arrivée</span></p>
-        </div>
-        <div className="overflow-x-auto">
-          <table className="w-full min-w-[560px] border-separate border-spacing-2">
-            <thead><tr><th className="w-32" />{places.map(place => <th key={place} scope="col" className="px-2 pb-1 text-center text-sm font-semibold">{place}</th>)}</tr></thead>
-            <tbody>{places.map(from => <tr key={from}>
-              <th scope="row" className="pr-2 text-left text-sm font-semibold">{from}</th>
-              {places.map(to => {
-                if (from === to) return <td key={to} className="h-20 text-center text-zinc-500">–</td>;
-                const count = onRoute(board.unassigned, from, to).length;
-                const inShuttle = onRoute(plannedTransits, from, to).length;
-                const selected = route?.from === from && route.to === to;
-                return <td key={to} className="h-20 p-0">
-                  <button type="button" onClick={() => setRoute({ from, to })} aria-label={`${from} vers ${to} : ${objets(count)} à planifier`}
-                    className={`flex h-full w-full flex-col items-center justify-center rounded-xl border transition hover:border-brand-500/70 ${selected ? "border-brand-500 bg-brand-500/10" : count ? "border-[var(--crm-border-strong,var(--crm-border))] bg-[var(--crm-surface-2)]" : "border-[var(--crm-border)] bg-transparent"}`}>
-                    <span className={`text-2xl font-bold tabular-nums ${count ? "" : "text-zinc-500"}`}>{count}</span>
+    <div className="flex min-h-0 flex-1 gap-4 p-4 sm:p-6">
+      {!board ? <FullSpinner label="Chargement des flux…" /> : <>
+        {/* La grille occupe toute la hauteur ; elle se rétrécit quand le panneau de liaison est ouvert. */}
+        <section className={`min-h-0 min-w-0 flex-1 flex-col rounded-3xl border border-[var(--crm-border)] bg-[var(--crm-surface)] p-4 sm:p-6 ${route ? "hidden lg:flex" : "flex"}`}>
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+            <h2 className="text-lg font-bold">Flux entre les sites</h2>
+            <p className="flex items-center gap-2 text-xs text-zinc-500"><span>Lignes : départ</span><ArrowRight size={12} /><span>Colonnes : arrivée</span></p>
+          </div>
+          <div className="min-h-0 flex-1 overflow-auto">
+            <div role="table" aria-label="Flux entre les sites" className="grid h-full min-w-[420px] gap-2" style={grid}>
+              <div role="columnheader" />
+              {places.map(place => <div key={place} role="columnheader" className="flex items-end justify-center px-1 pb-1 text-center text-sm font-semibold">{place}</div>)}
+              {places.map(from => [
+                <div key={`${from}-row`} role="rowheader" className="flex items-center pr-2 text-sm font-semibold">{from}</div>,
+                ...places.map(to => {
+                  if (from === to) return <div key={`${from}-${to}`} role="cell" className="flex items-center justify-center text-zinc-500">–</div>;
+                  const count = onRoute(board.unassigned, from, to).length;
+                  const inShuttle = onRoute(plannedTransits, from, to).length;
+                  const selected = route?.from === from && route.to === to;
+                  return <button key={`${from}-${to}`} role="cell" type="button" onClick={() => setRoute({ from, to })} aria-label={`${from} vers ${to} : ${objets(count)} à planifier`} aria-pressed={selected}
+                    className={`flex min-h-0 min-w-0 flex-col items-center justify-center rounded-xl border transition hover:border-brand-500/70 ${selected ? "border-brand-500 bg-brand-500/10" : count ? "border-[var(--crm-border-strong,var(--crm-border))] bg-[var(--crm-surface-2)]" : "border-[var(--crm-border)] bg-transparent"}`}>
+                    <span className={`text-2xl font-bold tabular-nums sm:text-3xl ${count ? "" : "text-zinc-500"}`}>{count}</span>
                     <span className="text-[11px] text-zinc-500">{count > 1 ? "objets" : "objet"}</span>
                     {inShuttle > 0 && <span className="mt-0.5 text-[10px] font-semibold text-brand-500">+{inShuttle} en navette</span>}
-                  </button>
-                </td>;
-              })}
-            </tr>)}</tbody>
-          </table>
-        </div>
-      </section>}
+                  </button>;
+                }),
+              ])}
+            </div>
+          </div>
+        </section>
+        {route && <RoutePanel key={`${route.from}-${route.to}`} route={route} unassigned={onRoute(board.unassigned, route.from, route.to)} assigned={onRoute(activeTransits, route.from, route.to)} shuttles={board.shuttles} canCreate={canCreate} canUpdate={canUpdate} onClose={() => setRoute(null)} onOpenRequest={setOpenRequest} />}
+      </>}
     </div>
-    {route && board && <RoutePanel key={`${route.from}-${route.to}`} route={route} unassigned={onRoute(board.unassigned, route.from, route.to)} assigned={onRoute(activeTransits, route.from, route.to)} shuttles={board.shuttles} canCreate={canCreate} canUpdate={canUpdate} onClose={() => setRoute(null)} onOpenRequest={setOpenRequest} />}
     {request && <RequestDetail key={request._id} request={request} canUpdate={canUpdate} onClose={() => setOpenRequest(null)} />}
   </div>;
 }
@@ -155,7 +157,16 @@ function RoutePanel({ route, unassigned, assigned, shuttles, canCreate, canUpdat
     {canUpdate && <Button disabled={!selection.length} onClick={() => { setError(""); setDone(""); setStep("assign"); }}>Affecter<ArrowRight size={16} /></Button>}
   </div> : <Button className="w-full" disabled={busy || !selection.length || !target || (target === "new" && (!newName.trim() || !newDate))} onClick={() => void confirm()}>{busy ? "Affectation…" : "Confirmer l’affectation"}</Button>;
 
-  return <Drawer open onClose={onClose} variant="side" title={header} footer={footer}>
+  // Échap ferme le panneau (sauf pendant la saisie d'un champ).
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => { if (event.key === "Escape" && !(event.target instanceof HTMLInputElement)) onClose(); };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  return <aside aria-label={`Liaison ${route.from} vers ${route.to}`} className="flex min-h-0 w-full shrink-0 flex-col overflow-hidden rounded-3xl border border-[var(--crm-border)] bg-[var(--crm-surface)] lg:w-[420px] xl:w-[480px]">
+    <div className="flex shrink-0 items-start justify-between gap-3 border-b border-[var(--crm-border)] px-5 py-4">{header}<button type="button" onClick={onClose} className="flex shrink-0 items-center gap-1.5 rounded-lg px-2 py-1 text-sm font-semibold text-zinc-400 hover:bg-[var(--crm-surface-2)] hover:text-zinc-100"><X size={16} />Fermer</button></div>
+    <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-5">
     {error && <p role="alert" className="mb-4 rounded-xl bg-red-500/10 p-3 text-sm text-red-500">{error}</p>}
     {done && <p role="status" className="mb-4 flex items-center gap-2 rounded-xl bg-green-500/10 p-3 text-sm text-green-500"><Check size={15} />{done}</p>}
 
@@ -225,5 +236,7 @@ function RoutePanel({ route, unassigned, assigned, shuttles, canCreate, canUpdat
       </div>
       <p className="flex items-start gap-2 rounded-xl bg-[var(--crm-surface-2)] p-3 text-xs text-zinc-400"><Info size={14} className="mt-0.5 shrink-0 text-sky-400" />Les objets rejoignent la navette choisie et sa tournée est recalculée. Chargement, départ et arrivée se suivent dans « Navettes v2 ».</p>
     </div>}
-  </Drawer>;
+    </div>
+    <div className="shrink-0 border-t border-[var(--crm-border)] p-4">{footer}</div>
+  </aside>;
 }
