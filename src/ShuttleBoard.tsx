@@ -6,7 +6,7 @@ import type { Id } from "../convex/_generated/dataModel";
 import { onTheWay, sameDirection, tourStops } from "../convex/meslogisticRules";
 import { PageHeader } from "./components/crm/PageHeader";
 import { KanbanColumn } from "./components/crm/KanbanColumn";
-import { TRANSIT_COLOR, shortDate } from "./components/crm/LogisticsCard";
+import { LogisticsCard, ON_SITE_COLOR, TRANSIT_COLOR, shortDate } from "./components/crm/LogisticsCard";
 import { Button } from "./components/ui/Button";
 import { Input } from "./components/ui/Field";
 import { Drawer } from "./components/ui/Drawer";
@@ -79,7 +79,7 @@ export function ShuttleBoard({ canCreate, canUpdate }: { canCreate: boolean; can
     <div className="flex-1 overflow-auto p-4 sm:p-6">
       {!board ? <FullSpinner label="Chargement des navettes…" /> : <div className="flex flex-col gap-4 lg:h-full lg:flex-row">
         <KanbanColumn title="À planifier" count={unassigned.length} accent={UNPLANNED_COLOR}>
-          {unassigned.length === 0 ? <p className="p-3 text-center text-xs text-zinc-500">Toutes les demandes sont dans une navette.</p> : unassigned.map(row => <RequestChip key={row._id} request={row} onOpen={() => setOpenRequest(row._id)} />)}
+          {unassigned.length === 0 ? <p className="p-3 text-center text-xs text-zinc-500">Toutes les demandes sont dans une navette.</p> : unassigned.map(row => <RequestCardV1 key={row._id} request={row} onOpen={() => setOpenRequest(row._id)} />)}
         </KanbanColumn>
         {(["planifiee", "en_route"] as const).map(status => <KanbanColumn key={status} title={`Navettes ${STATUS[status].label.toLocaleLowerCase("fr-FR")}s`} count={byStatus(status).length} accent={STATUS[status].color}>
           {byStatus(status).length === 0 ? <p className="p-3 text-center text-xs text-zinc-500">{status === "planifiee" ? "Aucune navette planifiée." : "Aucune navette en route."}</p> : byStatus(status).map(item => <ShuttleCard key={item._id} shuttle={item} onOpen={() => setOpenShuttle(item._id)} />)}
@@ -108,17 +108,43 @@ export function RequestChip({ request, onOpen, children }: { request: Transit; o
   </div>;
 }
 
+/** Couleur des cartes de navettes (même dessin que les cartes Demandes v1). */
+export const CARD_COLOR: Record<Status, string> = { planifiee: ON_SITE_COLOR, en_route: TRANSIT_COLOR, terminee: "#86efac" };
+
 export function ShuttleCard({ shuttle, onOpen }: { shuttle: Shuttle; onOpen: () => void }) {
-  const late = shuttle.transits.filter(row => row.dueDate && row.dueDate < shuttle.scheduledDate);
+  const count = shuttle.transits.length;
+  const loaded = shuttle.transits.filter(row => row.loadedAt).length;
   const delivered = shuttle.transits.filter(row => row.status === "receptionnee").length;
-  return <button type="button" onClick={onOpen} className="block w-full rounded-[22px] bg-[var(--crm-surface)] p-3.5 text-left ring-1 ring-[var(--crm-border)] transition hover:ring-brand-500/60" style={{ borderLeft: `5px solid ${STATUS[shuttle.status].color}` }}>
-    <span className="flex items-start justify-between gap-2"><span className="flex min-w-0 items-center gap-2 font-bold"><Bus size={15} className="shrink-0" /><span className="truncate">{shuttle.name}</span></span><span className="shrink-0 text-xs tabular-nums text-zinc-400">{shortDate(shuttle.scheduledDate)}</span></span>
-    <Stops stops={stopsOf(shuttle.transits)} className="mt-2 text-xs font-semibold" />
-    <span className="mt-2 flex items-center justify-between gap-2 text-xs text-zinc-500">
-      <span>{shuttle.transits.length} demande{shuttle.transits.length > 1 ? "s" : ""}{shuttle.status === "en_route" ? ` · ${delivered} livrée${delivered > 1 ? "s" : ""}` : shuttle.status === "planifiee" && shuttle.transits.length ? ` · ${shuttle.transits.filter(row => row.loadedAt).length}/${shuttle.transits.length} chargée${shuttle.transits.length > 1 ? "s" : ""}` : ""}</span>
-      {late.length > 0 && shuttle.status === "planifiee" && <span className="flex items-center gap-1 font-semibold text-amber-500"><AlertTriangle size={12} />{late.length} après échéance</span>}
-    </span>
-  </button>;
+  const late = shuttle.transits.filter(row => row.dueDate && row.dueDate < shuttle.scheduledDate).length;
+  const stops = stopsOf(shuttle.transits).map(shortLocation);
+  const progress = shuttle.status === "planifiee" ? `${loaded}/${count} chargé${loaded > 1 ? "s" : ""}` : shuttle.status === "en_route" ? `${delivered}/${count} livré${delivered > 1 ? "s" : ""}` : "Livrée";
+  const via = stops.length > 2 ? `via ${stops.slice(1, -1).join(", ")}` : "";
+  return <LogisticsCard
+    source={shuttle.name}
+    date={shortDate(shuttle.scheduledDate)}
+    customer={`${count} objet${count > 1 ? "s" : ""}`}
+    product={count ? progress : "Aucun objet"}
+    origin={stops[0] ?? "—"}
+    destination={stops[stops.length - 1] ?? "—"}
+    footer={[via, shuttle.status === "planifiee" && late ? `⚠ ${late} après échéance` : ""].filter(Boolean).join(" · ") || undefined}
+    color={CARD_COLOR[shuttle.status]}
+    onOpen={onOpen}
+  />;
+}
+
+/** Demande sans navette, carte identique à Demandes v1. */
+export function RequestCardV1({ request, onOpen }: { request: Transit; onOpen: () => void }) {
+  return <LogisticsCard
+    source={request.fromOrder ? "BatiRE" : "Demande interne"}
+    date={request.reference}
+    customer={request.customerName || "Déplacement interne"}
+    product={`${request.quantity} ${request.unit} · ${request.title}`}
+    origin={shortLocation(request.origin)}
+    destination={shortLocation(request.destination)}
+    footer={request.dueDate ? `Échéance ${shortDate(request.dueDate)}` : undefined}
+    color={request.fromOrder ? TRANSIT_COLOR : "#d9d9d9"}
+    onOpen={onOpen}
+  />;
 }
 
 export function NewShuttle({ onClose, onCreated }: { onClose: () => void; onCreated: (id: Id<"mlShuttles">) => void }) {
@@ -142,7 +168,7 @@ export function NewShuttle({ onClose, onCreated }: { onClose: () => void; onCrea
   </Drawer>;
 }
 
-export function ShuttleDetail({ shuttle, unassigned, canUpdate, onClose, onOpenRequest }: { shuttle: Shuttle; unassigned: Transit[]; canUpdate: boolean; onClose: () => void; onOpenRequest: (id: string) => void }) {
+export function ShuttleDetail({ shuttle, unassigned, canUpdate, onClose, onOpenRequest, layout = "modal" }: { shuttle: Shuttle; unassigned: Transit[]; canUpdate: boolean; onClose: () => void; onOpenRequest: (id: string) => void; layout?: "modal" | "panel" }) {
   const addRequests = useMutation(api.meslogisticShuttles.addRequests);
   const removeRequest = useMutation(api.meslogisticShuttles.removeRequest);
   const depart = useMutation(api.meslogisticShuttles.departShuttle);
@@ -176,10 +202,8 @@ export function ShuttleDetail({ shuttle, unassigned, canUpdate, onClose, onOpenR
   const steps: { key: Status; label: string }[] = [{ key: "planifiee", label: "Planifiée" }, { key: "en_route", label: "En route" }, { key: "terminee", label: "Terminée" }];
   const reached = steps.findIndex(step => step.key === shuttle.status);
 
-  return <Drawer open onClose={onClose} variant="modal" headerStyle={{ backgroundColor: STATUS[shuttle.status].color, color: "#09090b" }} headerClassName="text-zinc-950" closeButtonClassName="text-zinc-950"
-    title={<span className="flex items-center gap-2 text-zinc-950"><Bus size={18} />Navette · {STATUS[shuttle.status].label}</span>}
-    headerContent={<><h2 className="text-2xl font-bold">{shuttle.name}</h2><p className="mt-1 flex items-center gap-2 text-sm capitalize"><CalendarClock size={15} />{longDate(shuttle.scheduledDate)} · {shuttle.transits.length} demande{shuttle.transits.length > 1 ? "s" : ""}</p></>}>
-    <div className="space-y-6 py-6">
+  const headerContent = <><h2 className="text-2xl font-bold">{shuttle.name}</h2><p className="mt-1 flex items-center gap-2 text-sm capitalize"><CalendarClock size={15} />{longDate(shuttle.scheduledDate)} · {shuttle.transits.length} objet{shuttle.transits.length > 1 ? "s" : ""}</p></>;
+  const body = <div className={layout === "panel" ? "space-y-6" : "space-y-6 py-6"}>
       {error && <p role="alert" className="rounded-xl bg-red-500/10 p-3 text-sm text-red-500">{error}</p>}
 
       <section className="rounded-2xl border border-[var(--crm-border)] p-5">
@@ -207,7 +231,7 @@ export function ShuttleDetail({ shuttle, unassigned, canUpdate, onClose, onOpenR
           {canUpdate && enRoute && delivering.size > 0 && <Button size="sm" variant="secondary" disabled={busy} onClick={() => void run(() => deliver({ shuttleId: shuttle._id, requestIds: [...delivering] as Id<"mlRequests">[] }), () => setDelivering(new Set()))}><PackageCheck size={15} />Livrer la sélection ({delivering.size})</Button>}
         </div>
         {shuttle.transits.length === 0 ? <p className="rounded-xl bg-[var(--crm-surface-2)] p-4 text-sm text-zinc-500">Aucune demande pour l’instant. Ajoutez-en ci-dessous.</p> :
-          <div className="grid gap-2 md:grid-cols-2">{shuttle.transits.map(row => <RequestChip key={row._id} request={row} onOpen={() => onOpenRequest(row._id)}>
+          <div className="grid gap-2">{shuttle.transits.map(row => <RequestChip key={row._id} request={row} onOpen={() => onOpenRequest(row._id)}>
             <div className="mt-2 flex items-center justify-between gap-2 border-t border-[var(--crm-border)] pt-2 text-xs">
               {planned && row.status === "a_preparer" ? <label className={`flex items-center gap-1.5 font-semibold ${row.loadedAt ? "text-green-500" : "text-amber-500"}`} title={row.loadedAt ? `Confirmé par ${row.loadedBy ?? "?"} le ${new Date(row.loadedAt).toLocaleString("fr-FR")}` : undefined}><input type="checkbox" disabled={!canUpdate || busy} checked={Boolean(row.loadedAt)} onChange={event => void run(() => setLoaded({ shuttleId: shuttle._id, requestId: row._id, loaded: event.target.checked }))} />{row.loadedAt ? "Chargé" : "À charger"}</label>
                 : <span className={row.status === "receptionnee" ? "font-semibold text-green-500" : row.status === "en_transit" ? "font-semibold" : "text-zinc-500"} style={row.status === "en_transit" ? { color: TRANSIT_COLOR } : undefined}>{row.status === "receptionnee" ? "Livrée" : row.status === "en_transit" ? "En transit" : "À charger"}</span>}
@@ -246,7 +270,20 @@ export function ShuttleDetail({ shuttle, unassigned, canUpdate, onClose, onOpenR
         </form> : <Button size="sm" variant="secondary" onClick={() => setEditing(true)}><Pencil size={14} />Modifier nom / date</Button>}
         <Button size="sm" variant="danger" disabled={busy} onClick={() => { if (window.confirm(`Supprimer la navette « ${shuttle.name} » ? Ses demandes reviendront dans « À planifier ».`)) void run(() => deleteShuttle({ shuttleId: shuttle._id }), onClose); }}><Trash2 size={14} />Supprimer la navette</Button>
       </section>}
+    </div>;
+
+  if (layout === "panel") return <aside aria-label={`Navette ${shuttle.name}`} className="flex min-h-0 w-full shrink-0 flex-col overflow-hidden rounded-3xl border border-[var(--crm-border)] bg-[var(--crm-surface)] lg:w-[460px] xl:w-[520px]">
+    <div className="shrink-0 px-5 py-4 text-zinc-950" style={{ backgroundColor: CARD_COLOR[shuttle.status] }}>
+      <div className="flex items-center justify-between gap-3"><span className="flex items-center gap-2 text-sm font-semibold"><Bus size={16} />Navette · {STATUS[shuttle.status].label}</span><button type="button" onClick={onClose} className="flex items-center gap-1.5 rounded-lg px-2 py-1 text-sm font-semibold hover:bg-black/10"><X size={16} />Fermer</button></div>
+      <div className="mt-2">{headerContent}</div>
     </div>
+    <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-5">{body}</div>
+  </aside>;
+
+  return <Drawer open onClose={onClose} variant="modal" headerStyle={{ backgroundColor: CARD_COLOR[shuttle.status], color: "#09090b" }} headerClassName="text-zinc-950" closeButtonClassName="text-zinc-950"
+    title={<span className="flex items-center gap-2 text-zinc-950"><Bus size={18} />Navette · {STATUS[shuttle.status].label}</span>}
+    headerContent={headerContent}>
+    {body}
   </Drawer>;
 }
 
