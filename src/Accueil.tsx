@@ -33,6 +33,7 @@ export function Accueil({ canCreate, canUpdate, isDark }: { canCreate: boolean; 
   const [search, setSearch] = useState("");
   const [dragging, setDragging] = useState<string | null>(null);
   const [fullSheet, setFullSheet] = useState(false);
+  const [openShuttleId, setOpenShuttleId] = useState<string | null>(null);
   const onPlace = useCallback((next: string | null) => setPlace(next), []);
 
   const active = useMemo(() => (requests ?? [])
@@ -70,9 +71,9 @@ export function Accueil({ canCreate, canUpdate, isDark }: { canCreate: boolean; 
     {/* Carte + navettes */}
     <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-3">
       <section aria-label="Carte des demandes" className="relative min-h-[320px] flex-[3] overflow-hidden rounded-3xl border border-[var(--crm-border)] bg-[var(--crm-surface)]">
-        <LogisticsMap requests={active} selected={selected} place={place} onPlace={onPlace} isDark={isDark} />
+        <LogisticsMap requests={active} selected={selected} place={place} onPlace={onPlace} isDark={isDark} shuttle={board.shuttles.find(shuttle => shuttle._id === openShuttleId) ?? null} />
       </section>
-      <ShuttleSection shuttles={board.shuttles} dragging={dragging} canCreate={canCreate} canUpdate={canUpdate} onSelectRequest={id => setSelectedId(id)} selectedId={selectedId} />
+      <ShuttleSection shuttles={board.shuttles} openId={openShuttleId} setOpenId={setOpenShuttleId} dragging={dragging} canCreate={canCreate} canUpdate={canUpdate} onSelectRequest={id => setSelectedId(id)} selectedId={selectedId} />
     </div>
 
     {/* Fiche de la demande */}
@@ -125,12 +126,11 @@ function periodDays(view: View, cursor: string) {
 }
 
 /** Section du bas : le calendrier des navettes, ou la navette ouverte (même emplacement). */
-function ShuttleSection({ shuttles, dragging, canCreate, canUpdate, onSelectRequest, selectedId }: {
-  shuttles: Shuttle[]; dragging: string | null; canCreate: boolean; canUpdate: boolean; onSelectRequest: (id: string) => void; selectedId: string | null;
+function ShuttleSection({ shuttles, openId, setOpenId, dragging, canCreate, canUpdate, onSelectRequest, selectedId }: {
+  shuttles: Shuttle[]; openId: string | null; setOpenId: (id: string | null) => void; dragging: string | null; canCreate: boolean; canUpdate: boolean; onSelectRequest: (id: string) => void; selectedId: string | null;
 }) {
   const addRequests = useMutation(api.meslogisticShuttles.addRequests);
-  const [openId, setOpenId] = useState<string | null>(null);
-  const [view, setView] = useState<View>("mois");
+  const [view, setView] = useState<View>("semaine");
   const [returnView, setReturnView] = useState<View | null>(null);
   const [cursor, setCursor] = useState(() => isoDay(new Date()));
   const [creating, setCreating] = useState(false);
