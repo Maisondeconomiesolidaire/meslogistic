@@ -15,6 +15,7 @@ import { EmptyState } from "./components/ui/EmptyState";
 import { shortLocation } from "./Demandes";
 import { RequestDetail } from "./RequestDetail";
 import { today } from "./TransferPlanning";
+import { DatePicker } from "./components/ui/DatePicker";
 
 export type Board = NonNullable<ReturnType<typeof useQuery<typeof api.meslogisticShuttles.board>>>;
 export type Shuttle = Board["shuttles"][number];
@@ -178,7 +179,7 @@ export function NewShuttle({ onClose, onCreated }: { onClose: () => void; onCrea
         <label className="block text-sm font-medium">Lieu d’arrivée<OriginSelect value={destination} onChange={setDestination} placeholder="Choisir le lieu d’arrivée" /></label>
       </div>
       <p className="text-xs text-zinc-500">La navette vous proposera ensuite les objets à prendre sur ce trajet.</p>
-      <label className="block text-sm font-medium">Date de départ<Input required type="date" min={today()} value={date} onChange={event => setDate(event.target.value)} /></label>
+      <div className="block text-sm font-medium">Date de départ<DatePicker required min={today()} value={date} onChange={setDate} placeholder="Choisir la date de départ" /></div>
       {error && <p role="alert" className="text-sm text-red-500">{error}</p>}
       <div className="flex gap-2"><Button type="submit" disabled={busy || !name.trim() || !date || !origin || !destination}>{busy ? "Création…" : "Créer et ajouter des demandes"}</Button><Button type="button" variant="secondary" onClick={onClose}>Annuler</Button></div>
     </form>
@@ -281,7 +282,7 @@ export function ShuttleDetail({ shuttle, unassigned, canUpdate, onClose, onOpenR
       {canUpdate && planned && <section className="flex flex-wrap items-end gap-3 border-t border-[var(--crm-border)] pt-5">
         {editing ? <form onSubmit={event => { event.preventDefault(); void run(() => updateShuttle({ shuttleId: shuttle._id, name, scheduledDate: date, origin: origin || undefined, destination: destination || undefined }), () => setEditing(false)); }} className="flex flex-wrap items-end gap-2">
           <label className="text-sm">Nom<Input required maxLength={100} value={name} onChange={event => setName(event.target.value)} /></label>
-          <label className="text-sm">Date<Input required type="date" value={date} onChange={event => setDate(event.target.value)} /></label>
+          <div className="w-72 text-sm">Date de départ<DatePicker required value={date} onChange={setDate} /></div>
           <label className="text-sm">Départ<OriginSelect value={origin} onChange={setOrigin} /></label>
           <label className="text-sm">Arrivée<OriginSelect value={destination} onChange={setDestination} placeholder="Choisir le lieu d’arrivée" /></label>
           <Button type="submit" size="sm" disabled={busy}>Enregistrer</Button><Button type="button" size="sm" variant="secondary" onClick={() => setEditing(false)}>Annuler</Button>
