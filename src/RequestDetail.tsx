@@ -44,7 +44,7 @@ const dims = (m: { lengthCm?: number; widthCm?: number; heightCm?: number; diame
 };
 
 /** Aperçu de l'article Bâtire transporté : on reconnaît le lot à charger d'un coup d'œil. */
-function ArticlePreview({ materialId, title, quantity, unit }: { materialId?: Id<"btMaterials">; title: string; quantity: number; unit: string }) {
+export function ArticlePreview({ materialId, title, quantity, unit }: { materialId?: Id<"btMaterials">; title: string; quantity: number; unit: string }) {
   const material = useQuery(api.batire.getPublicMaterial, materialId ? { id: materialId } : "skip");
   const [photo, setPhoto] = useState(0);
   const photos = material?.photoUrls ?? [];

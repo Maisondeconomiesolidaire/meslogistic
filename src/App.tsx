@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { Suspense, lazy, useEffect, useState } from "react";
 import { SignedIn, SignedOut, UserButton, useUser } from "@clerk/clerk-react";
 import { useConvexAuth, useQuery } from "convex/react";
 import { Navigate, useLocation } from "react-router-dom";
@@ -11,6 +11,7 @@ import { Navettes } from "./Navettes";
 import { ShuttleBoard } from "./ShuttleBoard";
 import { RouteMatrix } from "./RouteMatrix";
 import { ShuttleKanban } from "./ShuttleKanban";
+const Accueil = lazy(() => import("./Accueil").then(module => ({ default: module.Accueil })));
 export default function App() {
   const location = useLocation();
   const auth = location.pathname === "/connexion" || location.pathname === "/inscription";
@@ -34,6 +35,6 @@ function Workspace() {
   const can = (action: string) => access.isAdmin || access.bootstrapMode || (access.isStaff && access.grants.some(g => g.pageKey === "meslogistic:demandes" && g.actions.includes(action)));
   const account = <div className="flex items-center gap-3 rounded-lg bg-[var(--crm-surface-2)] px-3 py-2"><UserButton appearance={{ elements: { avatarBox: "h-9 w-9" } }} /><div className="min-w-0"><p className="truncate text-sm font-medium">{user?.fullName ?? user?.primaryEmailAddress?.emailAddress}</p><p className="truncate text-xs text-zinc-500">{user?.primaryEmailAddress?.emailAddress}</p></div></div>;
   return <CrmShell isDark={!light} onToggleTheme={() => { localStorage.setItem("meslogistic-theme", light ? "dark" : "light"); setLight(!light); }} account={account} canRead={can("read")}>
-    {can("read") ? (location.pathname === "/navettes" ? <Navettes canCreate={can("create")} canUpdate={can("update")} /> : location.pathname === "/v2" ? <ShuttleBoard canCreate={can("create")} canUpdate={can("update")} /> : location.pathname === "/v3" ? <RouteMatrix canCreate={can("create")} canUpdate={can("update")} /> : location.pathname === "/navettes-v2" ? <ShuttleKanban canCreate={can("create")} canUpdate={can("update")} /> : <Demandes canCreate={can("create")} canUpdate={can("update")} />) : <div className="p-10"><h1 className="text-xl font-bold">Accès aux demandes requis</h1><p className="mt-3 text-zinc-500">Votre administrateur peut vous attribuer les droits Meslogistic depuis Mes Outils.</p><a className="mt-4 inline-block text-brand-500" href="https://mesoutils.groupemes.fr">Ouvrir Mes Outils</a></div>}
+    {can("read") ? (location.pathname === "/navettes" ? <Navettes canCreate={can("create")} canUpdate={can("update")} /> : location.pathname === "/v2" ? <ShuttleBoard canCreate={can("create")} canUpdate={can("update")} /> : location.pathname === "/v3" ? <RouteMatrix canCreate={can("create")} canUpdate={can("update")} /> : location.pathname === "/navettes-v2" ? <ShuttleKanban canCreate={can("create")} canUpdate={can("update")} /> : location.pathname === "/demandes" ? <Demandes canCreate={can("create")} canUpdate={can("update")} /> : <Suspense fallback={<FullSpinner label="Chargement de la carte…" />}><Accueil canCreate={can("create")} canUpdate={can("update")} isDark={!light} /></Suspense>) : <div className="p-10"><h1 className="text-xl font-bold">Accès aux demandes requis</h1><p className="mt-3 text-zinc-500">Votre administrateur peut vous attribuer les droits Meslogistic depuis Mes Outils.</p><a className="mt-4 inline-block text-brand-500" href="https://mesoutils.groupemes.fr">Ouvrir Mes Outils</a></div>}
   </CrmShell>;
 }
