@@ -30,7 +30,7 @@ const PALETTES = {
 
 /** Coordonnées d'un lieu : un des trois sites, sinon géocodage Mapbox (mis en cache). */
 const geocodeCache = new Map<string, Promise<LngLat | null>>();
-function locate(place: string): Promise<LngLat | null> {
+export function locate(place: string): Promise<LngLat | null> {
   const key = shortLocation(place);
   if (SITES[key]) return Promise.resolve(SITES[key].coords);
   if (!TOKEN) return Promise.resolve(null);

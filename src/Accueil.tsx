@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState, type DragEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useState, type DragEvent, type ReactNode } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { AlertTriangle, ArrowLeft, ArrowRight, Bus, CalendarClock, Check, ChevronLeft, ChevronRight, ClipboardCheck, ExternalLink, GripVertical, MapPin, PackageCheck, Plus, Printer, Search, Trash2, Truck, Undo2, X } from "lucide-react";
 import { api } from "../convex/_generated/api";
@@ -11,8 +11,8 @@ import { shortLocation, statusLabel, type Request } from "./Demandes";
 import { ArticlePreview, RequestDetail } from "./RequestDetail";
 import { CARD_COLOR, NewShuttle, STATUS, Stops, errorText, stopsOf, type Shuttle } from "./ShuttleBoard";
 import { today } from "./TransferPlanning";
-import { LogisticsMap, SELECTED_COLOR } from "./LogisticsMap";
-import type { NavPlan } from "./shuttleRoute";
+import { LogisticsMap, SELECTED_COLOR, locate } from "./LogisticsMap";
+import { suggestOnRoute, type NavPlan, type RouteSuggestion } from "./shuttleRoute";
 import { printShuttle } from "./shuttlePrint";
 
 type Status = Shuttle["status"];
@@ -80,7 +80,7 @@ export function Accueil({ canCreate, canUpdate, isDark }: { canCreate: boolean; 
       <section aria-label="Carte des demandes" className="relative min-h-[320px] flex-[3] overflow-hidden rounded-3xl border border-[var(--crm-border)] bg-[var(--crm-surface)]">
         <LogisticsMap requests={active} selected={selected} place={place} onPlace={onPlace} isDark={isDark} shuttle={board.shuttles.find(shuttle => shuttle._id === openShuttleId) ?? null} onPlan={setNavPlan} />
       </section>
-      <ShuttleSection shuttles={board.shuttles} openId={openShuttleId} setOpenId={setOpenShuttleId} dragging={dragging} canCreate={canCreate} canUpdate={canUpdate} onSelectRequest={id => setSelectedId(id)} selectedId={selectedId} navPlan={navPlan} />
+      <ShuttleSection shuttles={board.shuttles} openId={openShuttleId} setOpenId={setOpenShuttleId} dragging={dragging} canCreate={canCreate} canUpdate={canUpdate} onSelectRequest={id => setSelectedId(id)} selectedId={selectedId} navPlan={navPlan} candidates={active.filter(request => request.status === "a_preparer" && !request.shuttleId)} />
     </div>
 
     {/* Fiche de la demande */}
@@ -133,8 +133,8 @@ function periodDays(view: View, cursor: string) {
 }
 
 /** Section du bas : le calendrier des navettes, ou la navette ouverte (même emplacement). */
-function ShuttleSection({ shuttles, openId, setOpenId, dragging, canCreate, canUpdate, onSelectRequest, selectedId, navPlan }: {
-  shuttles: Shuttle[]; openId: string | null; setOpenId: (id: string | null) => void; dragging: string | null; canCreate: boolean; canUpdate: boolean; onSelectRequest: (id: string) => void; selectedId: string | null; navPlan: NavPlan | null;
+function ShuttleSection({ shuttles, openId, setOpenId, dragging, canCreate, canUpdate, onSelectRequest, selectedId, navPlan, candidates }: {
+  shuttles: Shuttle[]; openId: string | null; setOpenId: (id: string | null) => void; dragging: string | null; canCreate: boolean; canUpdate: boolean; onSelectRequest: (id: string) => void; selectedId: string | null; navPlan: NavPlan | null; candidates: Request[];
 }) {
   const addRequests = useMutation(api.meslogisticShuttles.addRequests);
   const [view, setView] = useState<View>("semaine");
@@ -190,7 +190,7 @@ function ShuttleSection({ shuttles, openId, setOpenId, dragging, canCreate, canU
 
   return <section aria-label="Navettes" className="flex min-h-[340px] flex-[2] flex-col overflow-hidden rounded-3xl border border-[var(--crm-border)] bg-[var(--crm-surface)]">
     {error && <p role="alert" className="flex shrink-0 items-center justify-between gap-2 bg-red-500/10 px-4 py-2 text-sm text-red-500">{error}<button type="button" onClick={() => setError("")} aria-label="Fermer"><X size={14} /></button></p>}
-    {open ? <ShuttleInline shuttle={open} canUpdate={canUpdate} dragging={dragging} dropActive={dropTarget === open._id} dropProps={dropProps(open)} onBack={() => setOpenId(null)} onSelectRequest={onSelectRequest} selectedId={selectedId} onError={setError} navPlan={navPlan} /> : <>
+    {open ? <ShuttleInline shuttle={open} canUpdate={canUpdate} dragging={dragging} dropActive={dropTarget === open._id} dropProps={dropProps(open)} onBack={() => setOpenId(null)} onSelectRequest={onSelectRequest} selectedId={selectedId} onError={setError} navPlan={navPlan} candidates={candidates} /> : <>
       <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-[var(--crm-border)] px-4 py-2.5">
         {view === "jour" && returnView && <button type="button" onClick={() => { setView(returnView); setReturnView(null); }} className="flex items-center gap-1.5 rounded-lg px-2 py-1 text-sm font-semibold text-zinc-400 hover:bg-[var(--crm-surface-2)] hover:text-zinc-100"><ArrowLeft size={16} />{returnView === "mois" ? "Mois" : "Semaine"}</button>}
         <h2 className="mr-1 text-lg font-bold">Navettes</h2>
@@ -241,9 +241,9 @@ function ShuttleSection({ shuttles, openId, setOpenId, dragging, canCreate, canU
   </section>;
 }
 
-function ShuttleInline({ shuttle, canUpdate, dragging, dropActive, dropProps, onBack, onSelectRequest, selectedId, onError, navPlan }: {
+function ShuttleInline({ shuttle, canUpdate, dragging, dropActive, dropProps, onBack, onSelectRequest, selectedId, onError, navPlan, candidates }: {
   shuttle: Shuttle; canUpdate: boolean; dragging: string | null; dropActive: boolean; dropProps: Record<string, unknown>;
-  onBack: () => void; onSelectRequest: (id: string) => void; selectedId: string | null; onError: (message: string) => void; navPlan: NavPlan | null;
+  onBack: () => void; onSelectRequest: (id: string) => void; selectedId: string | null; onError: (message: string) => void; navPlan: NavPlan | null; candidates: Request[];
 }) {
   const removeRequest = useMutation(api.meslogisticShuttles.removeRequest);
   const setLoaded = useMutation(api.meslogisticShuttles.setLoaded);
@@ -293,7 +293,7 @@ function ShuttleInline({ shuttle, canUpdate, dragging, dropActive, dropProps, on
       <button type="button" onClick={onBack} className="flex items-center gap-1.5 rounded-lg px-2 py-1 text-sm font-semibold text-zinc-400 hover:bg-[var(--crm-surface-2)] hover:text-zinc-100"><ArrowLeft size={16} />Navettes</button>
       <div className="min-w-0">
         <p className="flex items-center gap-2 text-lg font-bold"><Bus size={18} />{shuttle.name}<span className="rounded-full px-2.5 py-0.5 text-xs font-semibold text-zinc-950" style={{ backgroundColor: STATUS[shuttle.status].color }}>{SHUTTLE_LABEL[shuttle.status]}</span></p>
-        <p className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-zinc-400"><span className="flex items-center gap-1 capitalize"><CalendarClock size={13} />{longDate(shuttle.scheduledDate)}</span>{shuttle.origin && <span className="flex items-center gap-1"><MapPin size={13} />Départ : {shortLocation(shuttle.origin)}</span>}<Stops stops={stopsOf(shuttle.transits)} className="font-semibold text-zinc-300" /></p>
+        <p className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-zinc-400"><span className="flex items-center gap-1 capitalize"><CalendarClock size={13} />{longDate(shuttle.scheduledDate)}</span>{shuttle.origin && <span className="flex items-center gap-1"><MapPin size={13} />{shortLocation(shuttle.origin)}{shuttle.destination ? <><ArrowRight size={12} />{shortLocation(shuttle.destination)}</> : null}</span>}<Stops stops={stopsOf(shuttle.transits)} className="font-semibold text-zinc-300" /></p>
       </div>
       {planned && total > 0 && <span className={`flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold ${loaded === total ? "bg-green-500/15 text-green-500" : "bg-amber-500/15 text-amber-500"}`}><ClipboardCheck size={14} />{loaded}/{objets(total)} chargé{loaded > 1 ? "s" : ""}</span>}
       <div className="ml-auto flex flex-wrap gap-2">
@@ -307,6 +307,7 @@ function ShuttleInline({ shuttle, canUpdate, dragging, dropActive, dropProps, on
       </div>
     </div>
     <div className="min-h-0 flex-1 overflow-auto p-3">
+      {planned && <OnRoute shuttle={shuttle} candidates={candidates} canUpdate={canUpdate} onSelectRequest={onSelectRequest} onError={onError} />}
       {planned && canUpdate && <div className={`mb-3 flex items-center justify-center gap-2 rounded-2xl border-2 border-dashed p-4 text-sm font-semibold transition-colors ${dropActive ? "border-brand-500 bg-brand-500/15 text-brand-500" : dragging ? "border-brand-500/60 text-brand-500" : "border-[var(--crm-border)] text-zinc-500"}`}><GripVertical size={16} />Glissez ici des demandes de la liste de gauche</div>}
       {total === 0 ? <p className="p-3 text-sm text-zinc-500">Aucun objet dans cette navette.</p> :
         <ul className="grid gap-2 sm:grid-cols-2 2xl:grid-cols-3">{shuttle.transits.map(row => {
@@ -378,4 +379,52 @@ function RequestPanel({ request: r, shuttleName, onClose, onOpenFull }: { reques
       <Button variant="secondary" className="w-full" onClick={onOpenFull}><ExternalLink size={15} />Fiche complète (gestion, historique)</Button>
     </div>
   </aside>;
+}
+
+const minutes = (seconds: number) => { const value = Math.round(seconds / 60); return value < 60 ? `${value} min` : `${Math.floor(value / 60)} h ${String(value % 60).padStart(2, "0")}`; };
+
+/**
+ * « Sur ce trajet » : les demandes à planifier dont le chargement et la
+ * livraison tiennent sur le trajet départ → arrivée de la navette, avec le
+ * détour en temps de route Mapbox.
+ */
+function OnRoute({ shuttle, candidates, canUpdate, onSelectRequest, onError }: { shuttle: Shuttle; candidates: Request[]; canUpdate: boolean; onSelectRequest: (id: string) => void; onError: (message: string) => void }) {
+  const addRequests = useMutation(api.meslogisticShuttles.addRequests);
+  const [result, setResult] = useState<{ base: number; suggestions: RouteSuggestion<Request>[] } | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [failure, setFailure] = useState("");
+  const [busy, setBusy] = useState<string | null>(null);
+  const key = `${shuttle.origin}|${shuttle.destination}|${candidates.map(request => `${request._id}:${request.origin}>${request.destination}`).join(",")}`;
+  useEffect(() => {
+    if (!shuttle.origin || !shuttle.destination) { setResult(null); return; }
+    let cancelled = false;
+    setLoading(true); setFailure("");
+    suggestOnRoute(shuttle.origin, shuttle.destination, candidates, locate)
+      .then(value => { if (!cancelled) setResult(value); })
+      .catch((caught: unknown) => { if (!cancelled) setFailure(caught instanceof Error ? caught.message : "Suggestions indisponibles."); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key]);
+  if (!shuttle.destination) return <p className="mb-3 rounded-2xl bg-[var(--crm-surface-2)] p-3 text-xs text-zinc-500">Renseignez le lieu d’arrivée de la navette (page Navettes, « Modifier ») pour voir les objets à prendre sur le trajet.</p>;
+  async function add(request: Request) {
+    setBusy(request._id); onError("");
+    try { await addRequests({ shuttleId: shuttle._id, requestIds: [request._id as Id<"mlRequests">] }); } catch (caught) { onError(errorText(caught)); } finally { setBusy(null); }
+  }
+  const list = result?.suggestions ?? [];
+  return <section className="mb-3 rounded-2xl border border-[var(--crm-border)] bg-[var(--crm-surface-2)] p-3">
+    <p className="flex flex-wrap items-baseline gap-x-2 text-sm font-bold">Sur ce trajet<span className="text-xs font-normal text-zinc-500">{shortLocation(shuttle.origin ?? "")} → {shortLocation(shuttle.destination)}{result ? ` · ${minutes(result.base)} en direct` : ""}</span></p>
+    {loading ? <p className="mt-2 text-xs text-zinc-500">Calcul des trajets…</p>
+      : failure ? <p className="mt-2 text-xs text-red-500">{failure}</p>
+        : list.length === 0 ? <p className="mt-2 text-xs text-zinc-500">Aucun objet à planifier sur ce trajet.</p>
+          : <ul className="mt-2 grid gap-2 sm:grid-cols-2 2xl:grid-cols-3">{list.map(({ item: request, detourSeconds }) => <li key={request._id} className="flex items-center gap-2.5 rounded-xl border border-[var(--crm-border)] bg-[var(--crm-surface)] p-2 text-sm">
+            <button type="button" onClick={() => onSelectRequest(request._id)} className="flex min-w-0 flex-1 items-center gap-2.5 text-left">
+              <Thumb src={request.photoUrl} size={40} className="bg-[var(--crm-surface-3)]" />
+              <span className="min-w-0"><span className="block truncate font-semibold">{request.quantity} {request.unit} · {request.title}</span>
+                <span className="flex items-center gap-1 text-xs text-zinc-400">{shortLocation(request.origin)}<ArrowRight size={11} />{shortLocation(request.destination)}</span>
+                <span className={`text-[11px] font-semibold ${detourSeconds < 120 ? "text-green-500" : "text-amber-500"}`}>{detourSeconds < 120 ? "Sans détour" : `+${minutes(detourSeconds)} de détour`}{request.dueDate ? ` · échéance ${shortDate(request.dueDate)}` : ""}</span></span>
+            </button>
+            {canUpdate && <Button size="sm" variant="secondary" disabled={busy !== null} onClick={() => void add(request)}><Plus size={14} />{busy === request._id ? "…" : "Ajouter"}</Button>}
+          </li>)}</ul>}
+  </section>;
 }

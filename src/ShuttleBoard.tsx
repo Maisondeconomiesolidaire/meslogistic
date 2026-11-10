@@ -150,9 +150,9 @@ export function RequestCardV1({ request, onOpen }: { request: Transit; onOpen: (
 }
 
 /** Lieu de départ d'une navette : l'un des trois sites. */
-export function OriginSelect({ value, onChange }: { value: string; onChange: (value: string) => void }) {
+export function OriginSelect({ value, onChange, placeholder = "Choisir le lieu de départ" }: { value: string; onChange: (value: string) => void; placeholder?: string }) {
   return <select required value={value} onChange={event => onChange(event.target.value)} className="mt-1 block h-10 w-full rounded-xl border border-[var(--crm-border)] bg-[var(--crm-surface-2)] px-3 text-sm">
-    <option value="" disabled>Choisir le lieu de départ</option>
+    <option value="" disabled>{placeholder}</option>
     {Object.values(LOCATIONS).map(name => <option key={name} value={name}>{name}</option>)}
   </select>;
 }
@@ -161,21 +161,26 @@ export function NewShuttle({ onClose, onCreated }: { onClose: () => void; onCrea
   const create = useMutation(api.meslogistic.createShuttle);
   const [name, setName] = useState("");
   const [origin, setOrigin] = useState("");
+  const [destination, setDestination] = useState("");
   const [date, setDate] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   async function submit(event: FormEvent) {
     event.preventDefault(); setBusy(true); setError("");
-    try { onCreated(await create({ name, scheduledDate: date, origin })); } catch (caught) { setError(errorText(caught)); setBusy(false); }
+    try { onCreated(await create({ name, scheduledDate: date, origin, destination })); } catch (caught) { setError(errorText(caught)); setBusy(false); }
   }
   return <Drawer open onClose={onClose} variant="modal" title="Nouvelle navette" panelClassName="max-w-xl">
     <form onSubmit={submit} className="space-y-4 py-4">
       <p className="text-sm text-zinc-500">Ensuite, ajoutez-y les demandes à transporter.</p>
       <label className="block text-sm font-medium">Nom de la navette<Input required maxLength={100} autoFocus placeholder="Ex. Tournée du mardi" value={name} onChange={event => setName(event.target.value)} /></label>
-      <label className="block text-sm font-medium">Lieu de départ<OriginSelect value={origin} onChange={setOrigin} /></label>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <label className="block text-sm font-medium">Lieu de départ<OriginSelect value={origin} onChange={setOrigin} /></label>
+        <label className="block text-sm font-medium">Lieu d’arrivée<OriginSelect value={destination} onChange={setDestination} placeholder="Choisir le lieu d’arrivée" /></label>
+      </div>
+      <p className="text-xs text-zinc-500">La navette vous proposera ensuite les objets à prendre sur ce trajet.</p>
       <label className="block text-sm font-medium">Date de départ<Input required type="date" min={today()} value={date} onChange={event => setDate(event.target.value)} /></label>
       {error && <p role="alert" className="text-sm text-red-500">{error}</p>}
-      <div className="flex gap-2"><Button type="submit" disabled={busy || !name.trim() || !date || !origin}>{busy ? "Création…" : "Créer et ajouter des demandes"}</Button><Button type="button" variant="secondary" onClick={onClose}>Annuler</Button></div>
+      <div className="flex gap-2"><Button type="submit" disabled={busy || !name.trim() || !date || !origin || !destination}>{busy ? "Création…" : "Créer et ajouter des demandes"}</Button><Button type="button" variant="secondary" onClick={onClose}>Annuler</Button></div>
     </form>
   </Drawer>;
 }
@@ -193,6 +198,7 @@ export function ShuttleDetail({ shuttle, unassigned, canUpdate, onClose, onOpenR
   const [name, setName] = useState(shuttle.name);
   const [date, setDate] = useState(shuttle.scheduledDate);
   const [origin, setOrigin] = useState(shuttle.origin ?? "");
+  const [destination, setDestination] = useState(shuttle.destination ?? "");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   useEffect(() => { setPicked(new Set()); }, [shuttle.status]);
@@ -214,7 +220,7 @@ export function ShuttleDetail({ shuttle, unassigned, canUpdate, onClose, onOpenR
   const steps: { key: Status; label: string }[] = [{ key: "planifiee", label: "Planifiée" }, { key: "en_route", label: "En route" }, { key: "terminee", label: "Terminée" }];
   const reached = steps.findIndex(step => step.key === shuttle.status);
 
-  const headerContent = <><h2 className="text-2xl font-bold">{shuttle.name}</h2><p className="mt-1 flex items-center gap-2 text-sm capitalize"><CalendarClock size={15} />{longDate(shuttle.scheduledDate)} · {shuttle.transits.length} objet{shuttle.transits.length > 1 ? "s" : ""}</p>{shuttle.origin && <p className="mt-1 flex items-center gap-2 text-sm font-semibold"><MapPin size={15} />Départ : {shortLocation(shuttle.origin)}</p>}</>;
+  const headerContent = <><h2 className="text-2xl font-bold">{shuttle.name}</h2><p className="mt-1 flex items-center gap-2 text-sm capitalize"><CalendarClock size={15} />{longDate(shuttle.scheduledDate)} · {shuttle.transits.length} objet{shuttle.transits.length > 1 ? "s" : ""}</p>{shuttle.origin && <p className="mt-1 flex items-center gap-2 text-sm font-semibold"><MapPin size={15} />Départ : {shortLocation(shuttle.origin)}{shuttle.destination ? ` → Arrivée : ${shortLocation(shuttle.destination)}` : ""}</p>}</>;
   const body = <div className={layout === "panel" ? "space-y-6" : "space-y-6 py-6"}>
       {error && <p role="alert" className="rounded-xl bg-red-500/10 p-3 text-sm text-red-500">{error}</p>}
 
@@ -273,10 +279,11 @@ export function ShuttleDetail({ shuttle, unassigned, canUpdate, onClose, onOpenR
       </section>}
 
       {canUpdate && planned && <section className="flex flex-wrap items-end gap-3 border-t border-[var(--crm-border)] pt-5">
-        {editing ? <form onSubmit={event => { event.preventDefault(); void run(() => updateShuttle({ shuttleId: shuttle._id, name, scheduledDate: date, origin: origin || undefined }), () => setEditing(false)); }} className="flex flex-wrap items-end gap-2">
+        {editing ? <form onSubmit={event => { event.preventDefault(); void run(() => updateShuttle({ shuttleId: shuttle._id, name, scheduledDate: date, origin: origin || undefined, destination: destination || undefined }), () => setEditing(false)); }} className="flex flex-wrap items-end gap-2">
           <label className="text-sm">Nom<Input required maxLength={100} value={name} onChange={event => setName(event.target.value)} /></label>
           <label className="text-sm">Date<Input required type="date" value={date} onChange={event => setDate(event.target.value)} /></label>
           <label className="text-sm">Départ<OriginSelect value={origin} onChange={setOrigin} /></label>
+          <label className="text-sm">Arrivée<OriginSelect value={destination} onChange={setDestination} placeholder="Choisir le lieu d’arrivée" /></label>
           <Button type="submit" size="sm" disabled={busy}>Enregistrer</Button><Button type="button" size="sm" variant="secondary" onClick={() => setEditing(false)}>Annuler</Button>
         </form> : <Button size="sm" variant="secondary" onClick={() => setEditing(true)}><Pencil size={14} />Modifier nom / date</Button>}
         <Button size="sm" variant="danger" disabled={busy} onClick={() => { if (window.confirm(`Supprimer la navette « ${shuttle.name} » ? Ses demandes reviendront dans « À planifier ».`)) void run(() => deleteShuttle({ shuttleId: shuttle._id }), onClose); }}><Trash2 size={14} />Supprimer la navette</Button>

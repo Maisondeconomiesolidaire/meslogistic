@@ -20,13 +20,14 @@ function rowsToCarry(shuttle: Shuttle) {
 }
 
 /** Clé qui change dès que l'itinéraire de la navette doit être recalculé. */
-export const routeKey = (shuttle: Shuttle) => [shuttle._id, shuttle.status, shuttle.origin ?? "", shuttle.scheduledDate, shuttle.departedAt ?? "", ...rowsToCarry(shuttle).map(row => `${row._id}:${row.status}:${row.origin}>${row.destination}`)].join("|");
+export const routeKey = (shuttle: Shuttle) => [shuttle._id, shuttle.status, shuttle.origin ?? "", shuttle.destination ?? "", shuttle.scheduledDate, shuttle.departedAt ?? "", ...rowsToCarry(shuttle).map(row => `${row._id}:${row.status}:${row.origin}>${row.destination}`)].join("|");
 
 /** Lieux à géocoder pour la navette (nom court → libellé brut). */
 export function shuttlePlaces(shuttle: Shuttle) {
   const places = new Map<string, string>();
   const add = (raw?: string) => { if (raw) places.set(shortLocation(raw), raw); };
   add(shuttle.origin);
+  add(shuttle.destination);
   for (const row of rowsToCarry(shuttle)) { add(row.origin); add(row.destination); }
   return places;
 }
@@ -34,7 +35,7 @@ export function shuttlePlaces(shuttle: Shuttle) {
 /**
  * Itinéraire optimal de la navette : départ du lieu de départ de la navette, puis
  * chaque lieu de chargement et de livraison, en chargeant un objet avant de le
- * livrer. Durées réelles Mapbox (matrice), ordre exact par permutations (≤ 8 lieux),
+ * livrer, et fin au lieu d'arrivée de la navette s'il est renseigné. Durées réelles Mapbox (matrice), ordre exact par permutations (≤ 8 lieux),
  * puis tracé et temps de chaque étape par Mapbox Directions.
  */
 export async function planShuttle(shuttle: Shuttle, coordsOf: (raw: string) => Promise<LngLat | null>): Promise<NavPlan> {
@@ -47,22 +48,27 @@ export async function planShuttle(shuttle: Shuttle, coordsOf: (raw: string) => P
   const tasks = rows.map(row => ({ title: `${row.quantity} ${row.unit} · ${row.title}`, from: shortLocation(row.origin), to: shortLocation(row.destination), rawFrom: row.origin, rawTo: row.destination }))
     .map(task => ({ ...task, pickupAtStart: loaded || task.from === startName }));
 
-  // Lieux à visiter après le départ.
+  // Lieu d'arrivée : toujours le dernier arrêt.
+  const endName = shuttle.destination ? shortLocation(shuttle.destination) : null;
+
+  // Lieux à visiter après le départ (le lieu d'arrivée est ajouté à la fin).
   const raws = new Map<string, string>([[startName, startRaw]]);
+  if (endName) raws.set(endName, shuttle.destination!);
   const nodes: string[] = [];
   const need = (name: string, raw: string) => { raws.set(name, raw); if (!nodes.includes(name)) nodes.push(name); };
   for (const task of tasks) {
     if (task.from === task.to) continue;
     if (!task.pickupAtStart) need(task.from, task.rawFrom);
-    need(task.to, task.rawTo);
+    if (task.to !== endName) need(task.to, task.rawTo);
   }
 
   const points: LngLat[] = [];
-  for (const name of [startName, ...nodes]) {
+  for (const name of [startName, ...nodes, ...(endName ? [endName] : [])]) {
     const found = await coordsOf(raws.get(name)!);
     if (!found) throw new Error(`Lieu introuvable sur la carte : ${name}`);
     points.push(found);
   }
+  const endIndex = endName ? points.length - 1 : -1;
 
   // Heure de départ.
   const today = isoToday();
@@ -71,17 +77,21 @@ export async function planShuttle(shuttle: Shuttle, coordsOf: (raw: string) => P
   else if (shuttle.status === "planifiee" && shuttle.scheduledDate > today) { start = new Date(`${shuttle.scheduledDate}T${String(DEFAULT_START_HOUR).padStart(2, "0")}:00:00`); estimatedStart = true; }
 
   let order = nodes.map((_, index) => index + 1);
-  if (nodes.length > 1) {
+  if (nodes.length > 1 || (endName && nodes.length > 0)) {
     const matrixUrl = `https://api.mapbox.com/directions-matrix/v1/mapbox/driving/${points.map(point => point.join(",")).join(";")}?annotations=duration&access_token=${TOKEN}`;
     const matrix = await fetch(matrixUrl).then(response => response.ok ? response.json() : null) as { durations?: (number | null)[][] } | null;
     const durations = matrix?.durations;
     if (durations && nodes.length <= MAX_EXACT) {
       const position = (name: string, sequence: number[]) => sequence.findIndex(index => nodes[index - 1] === name);
-      const valid = (sequence: number[]) => tasks.every(task => task.pickupAtStart || task.from === task.to || position(task.from, sequence) < position(task.to, sequence));
+      const valid = (sequence: number[]) => tasks.every(task => task.pickupAtStart || task.from === task.to || task.to === endName || position(task.from, sequence) < position(task.to, sequence));
       let best: number[] | null = null; let bestCost = Infinity;
       const permute = (prefix: number[], rest: number[], cost: number) => {
         if (cost >= bestCost) return;
-        if (!rest.length) { if (valid(prefix)) { best = prefix; bestCost = cost; } return; }
+        if (!rest.length) {
+          const total = endIndex > 0 ? cost + (durations[prefix.length ? prefix[prefix.length - 1] : 0]?.[endIndex] ?? Infinity) : cost;
+          if (total < bestCost && valid(prefix)) { best = prefix; bestCost = total; }
+          return;
+        }
         const last = prefix.length ? prefix[prefix.length - 1] : 0;
         rest.forEach((next, index) => permute([...prefix, next], [...rest.slice(0, index), ...rest.slice(index + 1)], cost + (durations[last]?.[next] ?? Infinity)));
       };
@@ -90,7 +100,7 @@ export async function planShuttle(shuttle: Shuttle, coordsOf: (raw: string) => P
     }
   }
 
-  const route = [0, ...order];
+  const route = [0, ...order, ...(endIndex > 0 ? [endIndex] : [])];
   let line: LngLat[] = route.map(index => points[index]);
   let legs: { duration: number; distance: number }[] = route.slice(1).map(() => ({ duration: 0, distance: 0 }));
   let seconds = 0; let meters = 0;
@@ -104,14 +114,55 @@ export async function planShuttle(shuttle: Shuttle, coordsOf: (raw: string) => P
 
   let elapsed = 0;
   const stops: NavStop[] = route.map((index, step) => {
-    const name = index === 0 ? startName : nodes[index - 1];
+    const isEnd = index === endIndex;
+    const name = index === 0 ? startName : isEnd ? endName! : nodes[index - 1];
     const legSeconds = step === 0 ? 0 : legs[step - 1]?.duration ?? 0;
     elapsed += legSeconds;
     return {
       name, at: points[index], arrival: new Date(start.getTime() + elapsed * 1000), legSeconds,
-      pickups: tasks.filter(task => step === 0 ? task.pickupAtStart && !loaded : !task.pickupAtStart && task.from === name).map(task => task.title),
-      drops: step === 0 ? [] : tasks.filter(task => task.to === name && task.from !== task.to).map(task => task.title),
+      pickups: isEnd ? [] : tasks.filter(task => step === 0 ? task.pickupAtStart && !loaded : !task.pickupAtStart && task.from === name).map(task => task.title),
+      drops: step === 0 ? [] : tasks.filter(task => task.from !== task.to && task.to === name && (isEnd || task.to !== endName)).map(task => task.title),
     };
   });
   return { stops, line, seconds, meters, start, estimatedStart, end: new Date(start.getTime() + seconds * 1000) };
+}
+
+export type RouteSuggestion<T> = { item: T; detourSeconds: number };
+
+/**
+ * Objets à prendre sur le trajet départ → arrivée de la navette : pour chacun,
+ * le détour (en temps de route Mapbox) qu'impose le passage par son lieu de
+ * chargement puis de livraison. Exemple : Comptoir C → Esspace 150 propose un
+ * objet à prendre au Solidarium pour l'Esspace 150. On garde les détours
+ * courts (≤ 15 min ou ≤ 30 % du trajet direct), du plus court au plus long.
+ */
+export async function suggestOnRoute<T extends { origin: string; destination: string }>(
+  startRaw: string, endRaw: string, items: T[], coordsOf: (raw: string) => Promise<LngLat | null>,
+): Promise<{ base: number; suggestions: RouteSuggestion<T>[] }> {
+  if (!TOKEN) throw new Error("Carte indisponible : jeton Mapbox manquant.");
+  const raws = new Map<string, string>();
+  const add = (raw: string) => { const name = shortLocation(raw); if (!raws.has(name)) raws.set(name, raw); return name; };
+  const start = add(startRaw); const end = add(endRaw);
+  const trips = items.map(item => ({ item, from: add(item.origin), to: add(item.destination) })).filter(trip => trip.from !== trip.to);
+  const names: string[] = []; const points: LngLat[] = [];
+  for (const [name, raw] of raws) {
+    if (names.length >= 25) break;
+    const found = await coordsOf(raw);
+    if (found) { names.push(name); points.push(found); }
+  }
+  const at = (name: string) => names.indexOf(name);
+  if (at(start) < 0 || at(end) < 0) throw new Error("Lieu de départ ou d'arrivée introuvable sur la carte.");
+  const url = `https://api.mapbox.com/directions-matrix/v1/mapbox/driving/${points.map(point => point.join(",")).join(";")}?annotations=duration&access_token=${TOKEN}`;
+  const matrix = await fetch(url).then(response => response.ok ? response.json() : null) as { durations?: (number | null)[][] } | null;
+  const durations = matrix?.durations;
+  if (!durations) throw new Error("Temps de route Mapbox indisponibles pour le moment.");
+  const d = (a: string, b: string) => a === b ? 0 : durations[at(a)]?.[at(b)] ?? Infinity;
+  const base = d(start, end);
+  const limit = Math.max(15 * 60, base * 0.3);
+  const suggestions = trips
+    .filter(trip => at(trip.from) >= 0 && at(trip.to) >= 0)
+    .map(trip => ({ item: trip.item, detourSeconds: Math.max(0, d(start, trip.from) + d(trip.from, trip.to) + d(trip.to, end) - base) }))
+    .filter(suggestion => Number.isFinite(suggestion.detourSeconds) && suggestion.detourSeconds <= limit)
+    .sort((a, b) => a.detourSeconds - b.detourSeconds);
+  return { base, suggestions };
 }
