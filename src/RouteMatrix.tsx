@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { useMutation, useQuery } from "convex/react";
-import { AlertTriangle, ArrowRight, Bus, Check, ExternalLink, Plus } from "lucide-react";
+import { AlertTriangle, ArrowLeft, ArrowRight, Check, Info, Package, Plus } from "lucide-react";
 import { api } from "../convex/_generated/api";
 import type { Id } from "../convex/_generated/dataModel";
 import { PageHeader } from "./components/crm/PageHeader";
@@ -12,7 +12,7 @@ import { FullSpinner } from "./components/ui/Spinner";
 import { shortLocation } from "./Demandes";
 import { RequestDetail } from "./RequestDetail";
 import { today } from "./TransferPlanning";
-import { STATUS, Stops, compatibility, errorText, stopsOf, type Shuttle, type Transit } from "./ShuttleBoard";
+import { Stops, compatibility, errorText, stopsOf, type Shuttle, type Transit } from "./ShuttleBoard";
 
 /** Les trois sites, dans l'ordre de l'axe ; les autres lieux suivent par ordre alphabétique. */
 const AXIS_ORDER = ["Comptoir C", "Solidarium", "ESSpace 150"];
@@ -43,10 +43,11 @@ export function RouteMatrix({ canCreate, canUpdate }: { canCreate: boolean; canU
 
   const onRoute = <T extends { origin: string; destination: string }>(rows: T[], from: string, to: string) => rows.filter(row => shortLocation(row.origin) === from && shortLocation(row.destination) === to);
   const plannedTransits = planned.flatMap(shuttle => shuttle.transits.map(row => ({ ...row, shuttle })));
-  const total = board?.unassigned.length ?? 0;
+  // Objets déjà affectés à une navette pas encore terminée (planifiée ou en route).
+  const activeTransits = (board?.shuttles ?? []).filter(shuttle => shuttle.status !== "terminee").flatMap(shuttle => shuttle.transits.filter(row => row.status !== "receptionnee").map(row => ({ ...row, shuttle })));
 
   return <div className="flex min-h-screen flex-col">
-    <PageHeader title="Demandes v3" subtitle={`Flux entre les sites · ${objets(total)} à planifier. Cliquez sur un trajet pour affecter ses objets à une navette.`} />
+    <PageHeader title="Demandes v3" />
     <div className="flex-1 overflow-auto p-4 sm:p-6">
       {!board ? <FullSpinner label="Chargement des flux…" /> : <section className="rounded-3xl border border-[var(--crm-border)] bg-[var(--crm-surface)] p-4 sm:p-6">
         <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
@@ -77,106 +78,152 @@ export function RouteMatrix({ canCreate, canUpdate }: { canCreate: boolean; canU
         </div>
       </section>}
     </div>
-    {route && board && <RouteModal key={`${route.from}-${route.to}`} route={route} unassigned={onRoute(board.unassigned, route.from, route.to)} inShuttle={onRoute(plannedTransits, route.from, route.to)} shuttles={planned} canCreate={canCreate} canUpdate={canUpdate} onClose={() => setRoute(null)} onOpenRequest={setOpenRequest} />}
+    {route && board && <RoutePanel key={`${route.from}-${route.to}`} route={route} unassigned={onRoute(board.unassigned, route.from, route.to)} assigned={onRoute(activeTransits, route.from, route.to)} shuttles={board.shuttles} canCreate={canCreate} canUpdate={canUpdate} onClose={() => setRoute(null)} onOpenRequest={setOpenRequest} />}
     {request && <RequestDetail key={request._id} request={request} canUpdate={canUpdate} onClose={() => setOpenRequest(null)} />}
   </div>;
 }
 
-function RouteModal({ route, unassigned, inShuttle, shuttles, canCreate, canUpdate, onClose, onOpenRequest }: {
-  route: Route; unassigned: Transit[]; inShuttle: Array<Transit & { shuttle: Shuttle }>; shuttles: Shuttle[];
+type Assigned = Transit & { shuttle: Shuttle };
+type Filter = "tous" | "non" | "oui";
+
+/** Panneau latéral d'une liaison : liste des objets, puis affectation à une navette. */
+function RoutePanel({ route, unassigned, assigned, shuttles, canCreate, canUpdate, onClose, onOpenRequest }: {
+  route: Route; unassigned: Transit[]; assigned: Assigned[]; shuttles: Shuttle[];
   canCreate: boolean; canUpdate: boolean; onClose: () => void; onOpenRequest: (id: string) => void;
 }) {
   const addRequests = useMutation(api.meslogisticShuttles.addRequests);
   const createShuttle = useMutation(api.meslogistic.createShuttle);
-  const [picked, setPicked] = useState<Set<string>>(() => new Set(unassigned.map(row => row._id)));
+  const createRequest = useMutation(api.meslogistic.create);
+  const [step, setStep] = useState<"list" | "assign">("list");
+  const [filter, setFilter] = useState<Filter>("tous");
+  const [picked, setPicked] = useState<Set<string>>(new Set());
   const [target, setTarget] = useState<string>("");
   const [newName, setNewName] = useState(`${route.from} → ${route.to}`);
   const [newDate, setNewDate] = useState("");
+  const [adding, setAdding] = useState(false);
+  const [item, setItem] = useState({ title: "", quantity: "1", unit: "unité", dueDate: "" });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [done, setDone] = useState("");
-  // Les objets affectés quittent la liste : on ne garde cochés que ceux encore à planifier.
+  // Un objet affecté entre-temps n'est plus sélectionnable.
   useEffect(() => setPicked(current => new Set([...current].filter(id => unassigned.some(row => row._id === id)))), [unassigned]);
 
+  const now = today();
   const selection = unassigned.filter(row => picked.has(row._id));
   const earliestDue = selection.map(row => row.dueDate).filter(Boolean).sort()[0];
-  const now = today();
-  const candidates = shuttles.filter(shuttle => shuttle.scheduledDate >= now).map(shuttle => {
-    const reference = selection[0] ?? unassigned[0];
-    return { shuttle, ...(reference ? compatibility(reference, shuttle.transits) : { score: 0 }), late: Boolean(earliestDue && shuttle.scheduledDate > earliestDue) };
-  }).sort((a, b) => b.score - a.score || a.shuttle.scheduledDate.localeCompare(b.shuttle.scheduledDate));
+  const rows: Array<{ row: Transit; shuttle?: Shuttle }> = [
+    ...(filter === "oui" ? [] : unassigned.map(row => ({ row }))),
+    ...(filter === "non" ? [] : assigned.map(row => ({ row, shuttle: row.shuttle }))),
+  ];
+  const total = unassigned.length + assigned.length;
+  const allPicked = unassigned.length > 0 && picked.size === unassigned.length;
+  const candidates = shuttles.filter(shuttle => shuttle.status === "planifiee" && shuttle.scheduledDate >= now).map(shuttle => ({
+    shuttle, ...(selection[0] ? compatibility(selection[0], shuttle.transits) : { score: 0 }), late: Boolean(earliestDue && shuttle.scheduledDate > earliestDue),
+  })).sort((a, b) => b.score - a.score || a.shuttle.scheduledDate.localeCompare(b.shuttle.scheduledDate));
 
-  async function assign() {
-    if (!selection.length) return;
-    setBusy(true); setError(""); setDone("");
+  const toggle = (id: string) => setPicked(current => { const next = new Set(current); if (next.has(id)) next.delete(id); else next.add(id); return next; });
+  async function confirm() {
+    setBusy(true); setError("");
     try {
       let shuttleId = target as Id<"mlShuttles">;
       let name = shuttles.find(shuttle => shuttle._id === target)?.name ?? "";
       if (target === "new") { shuttleId = await createShuttle({ name: newName, scheduledDate: newDate }); name = newName.trim(); }
       await addRequests({ shuttleId, requestIds: selection.map(row => row._id) });
       setDone(`${objets(selection.length)} affecté${selection.length > 1 ? "s" : ""} à « ${name} ».`);
-      setTarget("");
+      setPicked(new Set()); setTarget(""); setStep("list");
     } catch (caught) { setError(errorText(caught)); } finally { setBusy(false); }
   }
-  const toggle = (id: string) => setPicked(current => { const next = new Set(current); if (next.has(id)) next.delete(id); else next.add(id); return next; });
+  async function addItem(event: FormEvent) {
+    event.preventDefault(); setBusy(true); setError("");
+    try {
+      await createRequest({ title: item.title, quantity: Number(item.quantity.replace(",", ".")), unit: item.unit, customerName: "", origin: route.from, destination: route.to, dueDate: item.dueDate });
+      setItem({ title: "", quantity: "1", unit: "unité", dueDate: "" }); setAdding(false); setDone("Objet ajouté à la liaison.");
+    } catch (caught) { setError(errorText(caught)); } finally { setBusy(false); }
+  }
 
-  return <Drawer open onClose={onClose} variant="modal"
-    title={<span className="flex items-center gap-2"><Bus size={18} />Trajet</span>}
-    headerContent={<><h2 className="flex flex-wrap items-center gap-3 text-2xl font-bold"><span>{route.from}</span><ArrowRight size={22} /><span>{route.to}</span></h2><p className="mt-1 text-sm text-zinc-500">{objets(unassigned.length)} à planifier{inShuttle.length ? ` · ${objets(inShuttle.length)} déjà en navette` : ""}</p></>}>
-    <div className="grid gap-6 py-6 lg:grid-cols-[minmax(0,1fr)_minmax(300px,380px)] lg:items-start">
-      <section className="min-w-0 space-y-3">
-        <div className="flex items-center justify-between gap-2">
-          <h3 className="font-semibold">Objets à planifier ({unassigned.length})</h3>
-          {unassigned.length > 1 && <button type="button" className="text-xs font-semibold text-brand-500" onClick={() => setPicked(picked.size === unassigned.length ? new Set() : new Set(unassigned.map(row => row._id)))}>{picked.size === unassigned.length ? "Tout décocher" : "Tout cocher"}</button>}
-        </div>
-        {unassigned.length === 0 ? <p className="rounded-xl bg-[var(--crm-surface-2)] p-4 text-sm text-zinc-500">Aucun objet à planifier sur ce trajet.</p> :
-          <ul className="space-y-2">{unassigned.map(row => {
-            const late = row.dueDate && row.dueDate < now;
-            return <li key={row._id} className={`flex items-start gap-3 rounded-xl border p-3 text-sm ${picked.has(row._id) ? "border-brand-500 bg-brand-500/10" : "border-[var(--crm-border)] bg-[var(--crm-surface-2)]"}`}>
-              <input type="checkbox" className="mt-1" checked={picked.has(row._id)} disabled={!canUpdate} onChange={() => toggle(row._id)} aria-label={`Sélectionner ${row.title}`} />
-              <div className="min-w-0 flex-1">
-                <p className="font-semibold">{row.quantity} {row.unit} · {row.title}</p>
-                <p className="mt-0.5 flex flex-wrap gap-x-3 text-xs text-zinc-500"><span>{row.customerName || "Déplacement interne"}</span><span className="font-mono">{row.reference}</span>{row.dueDate && <span className={late ? "font-semibold text-red-500" : ""}>échéance {shortDate(row.dueDate)}</span>}</p>
-              </div>
-              <button type="button" onClick={() => onOpenRequest(row._id)} className="shrink-0 text-zinc-500 hover:text-zinc-200" aria-label="Ouvrir la fiche"><ExternalLink size={15} /></button>
-            </li>;
-          })}</ul>}
+  const header = <div>
+    <p className="flex flex-wrap items-center gap-2 text-sm font-semibold">
+      <span className="rounded-full bg-green-500/15 px-2.5 py-0.5 text-green-500">{route.from}</span>
+      <ArrowRight size={14} className="text-zinc-500" />
+      <span className="rounded-full bg-sky-500/15 px-2.5 py-0.5 text-sky-400">{route.to}</span>
+    </p>
+    <p className="mt-1.5 text-xs font-normal text-zinc-500">{objets(total)} sur cette liaison</p>
+  </div>;
 
-        {inShuttle.length > 0 && <div className="pt-3"><h3 className="mb-2 font-semibold">Déjà en navette ({inShuttle.length})</h3>
-          <ul className="space-y-1.5">{inShuttle.map(row => <li key={row._id} className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-[var(--crm-surface-2)] px-3 py-2 text-sm">
-            <button type="button" onClick={() => onOpenRequest(row._id)} className="min-w-0 truncate text-left">{row.quantity} {row.unit} · {row.title}</button>
-            <span className="flex shrink-0 items-center gap-1.5 text-xs text-zinc-500"><Bus size={13} />{row.shuttle.name} · {shortDate(row.shuttle.scheduledDate)}{row.loadedAt ? " · chargé" : ""}</span>
-          </li>)}</ul>
-        </div>}
-      </section>
+  const footer = step === "list" ? <div className="flex items-center justify-between gap-3">
+    <div><p className="text-sm font-semibold">{objets(selection.length)} sélectionné{selection.length > 1 ? "s" : ""}</p><p className="text-[11px] text-zinc-500">Sélection possible sur plusieurs demandes</p></div>
+    {canUpdate && <Button disabled={!selection.length} onClick={() => { setError(""); setDone(""); setStep("assign"); }}>Affecter<ArrowRight size={16} /></Button>}
+  </div> : <Button className="w-full" disabled={busy || !selection.length || !target || (target === "new" && (!newName.trim() || !newDate))} onClick={() => void confirm()}>{busy ? "Affectation…" : "Confirmer l’affectation"}</Button>;
 
-      <aside className="space-y-3 rounded-2xl border border-[var(--crm-border)] p-4 lg:sticky lg:top-4">
-        <h3 className="font-semibold">Affecter à une navette</h3>
-        {!canUpdate ? <p className="text-sm text-zinc-500">Lecture seule.</p> : <>
-          <p className="text-xs text-zinc-500">{selection.length ? `${objets(selection.length)} sélectionné${selection.length > 1 ? "s" : ""}${earliestDue ? ` · échéance la plus proche ${shortDate(earliestDue)}` : ""}` : "Cochez au moins un objet."}</p>
-          <ul className="max-h-[40vh] space-y-2 overflow-y-auto pr-1">
-            {candidates.map(({ shuttle, label, late }) => <li key={shuttle._id}><label className={`flex cursor-pointer items-start gap-3 rounded-xl border p-3 text-sm ${target === shuttle._id ? "border-brand-500 bg-brand-500/10" : "border-[var(--crm-border)] bg-[var(--crm-surface-2)]"}`}>
-              <input type="radio" name="shuttle" className="mt-1" checked={target === shuttle._id} onChange={() => setTarget(shuttle._id)} />
-              <span className="min-w-0 flex-1">
-                <span className="flex items-center justify-between gap-2 font-semibold"><span className="truncate">{shuttle.name}</span><span className="shrink-0 text-xs font-normal text-zinc-500">{shortDate(shuttle.scheduledDate)}</span></span>
-                <Stops stops={stopsOf(shuttle.transits)} className="mt-1 text-xs text-zinc-400" />
-                <span className="mt-1 flex flex-wrap gap-1">{label && <span className="rounded-full bg-brand-500/15 px-2 py-0.5 text-[11px] font-semibold text-brand-500">{label}</span>}{late && <span className="flex items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-[11px] font-semibold text-amber-500"><AlertTriangle size={11} />après l’échéance</span>}<span className="text-[11px] text-zinc-500">{objets(shuttle.transits.length)}</span></span>
-              </span>
-            </label></li>)}
-            {canCreate && <li><label className={`flex cursor-pointer items-start gap-3 rounded-xl border border-dashed p-3 text-sm ${target === "new" ? "border-brand-500 bg-brand-500/10" : "border-[var(--crm-border)]"}`}>
-              <input type="radio" name="shuttle" className="mt-1" checked={target === "new"} onChange={() => setTarget("new")} />
-              <span className="min-w-0 flex-1 space-y-2"><span className="flex items-center gap-1.5 font-semibold"><Plus size={14} />Nouvelle navette</span>
-                {target === "new" && <><Input maxLength={100} value={newName} onChange={event => setNewName(event.target.value)} aria-label="Nom de la navette" /><Input type="date" min={now} max={earliestDue} value={newDate} onChange={event => setNewDate(event.target.value)} aria-label="Date de départ" /></>}
-              </span>
-            </label></li>}
-          </ul>
-          {candidates.length === 0 && !canCreate && <p className="text-sm text-zinc-500">Aucune navette planifiée à venir.</p>}
-          {error && <p role="alert" className="text-sm text-red-500">{error}</p>}
-          {done && <p role="status" className="flex items-center gap-2 text-sm text-green-500"><Check size={15} />{done}</p>}
-          <Button className="w-full" disabled={busy || !selection.length || !target || (target === "new" && (!newName.trim() || !newDate))} onClick={() => void assign()}>{busy ? "Affectation…" : `Affecter ${selection.length ? objets(selection.length) : ""}`}</Button>
-          <p className="text-[11px] text-zinc-500">Le départ et l’arrivée se gèrent ensuite dans « Navettes v2 ». Statut des navettes proposées : {STATUS.planifiee.label.toLocaleLowerCase("fr-FR")}.</p>
-        </>}
-      </aside>
-    </div>
+  return <Drawer open onClose={onClose} variant="side" title={header} footer={footer}>
+    {error && <p role="alert" className="mb-4 rounded-xl bg-red-500/10 p-3 text-sm text-red-500">{error}</p>}
+    {done && <p role="status" className="mb-4 flex items-center gap-2 rounded-xl bg-green-500/10 p-3 text-sm text-green-500"><Check size={15} />{done}</p>}
+
+    {step === "list" ? <div className="space-y-4">
+      <div className="flex items-center justify-between gap-2">
+        <h3 className="font-semibold">Objets à transporter</h3>
+        {canCreate && <Button size="sm" variant="secondary" onClick={() => setAdding(!adding)}><Plus size={14} />Objet</Button>}
+      </div>
+      {adding && <form onSubmit={addItem} className="grid gap-2 rounded-2xl border border-dashed border-[var(--crm-border)] p-3 sm:grid-cols-2">
+        <Input required autoFocus maxLength={300} placeholder="Objet (ex. Armoire)" value={item.title} onChange={event => setItem({ ...item, title: event.target.value })} className="sm:col-span-2" />
+        <Input required inputMode="decimal" aria-label="Quantité" value={item.quantity} onChange={event => setItem({ ...item, quantity: event.target.value })} />
+        <Input required maxLength={40} aria-label="Unité" value={item.unit} onChange={event => setItem({ ...item, unit: event.target.value })} />
+        <label className="text-xs text-zinc-500 sm:col-span-2">Échéance (obligatoire)<Input required type="date" min={now} value={item.dueDate} onChange={event => setItem({ ...item, dueDate: event.target.value })} /></label>
+        <div className="flex gap-2 sm:col-span-2"><Button type="submit" size="sm" disabled={busy}>Ajouter l’objet</Button><Button type="button" size="sm" variant="secondary" onClick={() => setAdding(false)}>Annuler</Button></div>
+      </form>}
+
+      <div className="grid grid-cols-3 rounded-full bg-[var(--crm-surface-2)] p-1 text-sm font-semibold">
+        {([["tous", "Tous"], ["non", "Non affectés"], ["oui", "Affectés"]] as const).map(([key, label]) => <button key={key} type="button" onClick={() => setFilter(key)} className={`rounded-full py-1.5 transition ${filter === key ? "bg-[var(--crm-surface-3)] text-[var(--foreground)]" : "text-zinc-500 hover:text-zinc-300"}`}>{label}</button>)}
+      </div>
+
+      {canUpdate && filter !== "oui" && unassigned.length > 0 && <div className="flex items-center justify-between text-sm">
+        <label className="flex cursor-pointer items-center gap-2"><input type="checkbox" className="h-4 w-4 rounded-full" checked={allPicked} onChange={() => setPicked(allPicked ? new Set() : new Set(unassigned.map(row => row._id)))} />Tout sélectionner</label>
+        <span className="text-zinc-500">{picked.size} sélectionné{picked.size > 1 ? "s" : ""}</span>
+      </div>}
+
+      {rows.length === 0 ? <p className="rounded-xl bg-[var(--crm-surface-2)] p-4 text-sm text-zinc-500">Aucun objet.</p> :
+        <ul className="space-y-2">{rows.map(({ row, shuttle }) => {
+          const selectable = !shuttle && canUpdate;
+          const checked = picked.has(row._id);
+          const late = row.dueDate && row.dueDate < now;
+          return <li key={row._id} className={`flex items-center gap-3 rounded-2xl border p-3.5 ${checked ? "border-brand-500" : "border-[var(--crm-border)]"}`}>
+            <input type="checkbox" className="h-4 w-4" disabled={!selectable} checked={checked} onChange={() => toggle(row._id)} aria-label={`Sélectionner ${row.title}`} />
+            <Package size={18} className="shrink-0 text-zinc-400" />
+            <button type="button" onClick={() => onOpenRequest(row._id)} className="min-w-0 flex-1 text-left">
+              <p className="truncate font-semibold">{row.title}{row.quantity !== 1 || row.unit !== "unité" ? <span className="font-normal text-zinc-500"> · {row.quantity} {row.unit}</span> : null}</p>
+              <p className="truncate text-[11px] text-zinc-500">{row.reference}{row.customerName ? ` · ${row.customerName}` : ""}{row.dueDate ? ` · ` : ""}{row.dueDate && <span className={late ? "font-semibold text-red-500" : ""}>échéance {shortDate(row.dueDate)}</span>}</p>
+            </button>
+            {shuttle ? <span className="shrink-0 rounded-md bg-green-500/15 px-2 py-1 text-xs font-semibold text-green-500">{shuttle.name}</span>
+              : <span className="shrink-0 rounded-md bg-orange-500/15 px-2 py-1 text-xs font-semibold text-orange-400">À affecter</span>}
+          </li>;
+        })}</ul>}
+    </div> : <div className="space-y-5">
+      <button type="button" onClick={() => setStep("list")} className="flex items-center gap-3 text-lg font-bold"><ArrowLeft size={18} />Affecter à une navette</button>
+      <div>
+        <p className="text-sm font-semibold">{objets(selection.length)} à affecter</p>
+        <ul className="mt-2 space-y-1.5">{selection.map(row => <li key={row._id} className="flex items-center gap-2 text-sm"><Package size={14} className="shrink-0 text-zinc-400" />{row.title} · <span className="text-zinc-500">{row.reference}</span></li>)}</ul>
+      </div>
+      <div className="space-y-2">
+        <h3 className="font-semibold">Sélectionner une navette</h3>
+        {candidates.map(({ shuttle, label, late }) => <label key={shuttle._id} className="flex cursor-pointer items-start gap-3 rounded-xl p-2 hover:bg-[var(--crm-surface-2)]">
+          <input type="radio" name="shuttle" className="mt-1.5 h-4 w-4" checked={target === shuttle._id} onChange={() => setTarget(shuttle._id)} />
+          <span className="min-w-0 flex-1">
+            <span className="flex flex-wrap items-center gap-2"><span className="font-semibold">{shuttle.name}</span>
+              {shuttle.transits.length ? <span className="rounded-md bg-green-500/15 px-2 py-0.5 text-xs font-semibold text-green-500">{label ?? "En préparation"}</span> : <span className="rounded-md bg-[var(--crm-surface-3)] px-2 py-0.5 text-xs font-semibold">Disponible</span>}
+              {late && <span className="flex items-center gap-1 rounded-md bg-amber-500/15 px-2 py-0.5 text-xs font-semibold text-amber-500"><AlertTriangle size={11} />après l’échéance</span>}</span>
+            <span className="mt-0.5 block text-sm text-zinc-500">{shortDate(shuttle.scheduledDate)} · {shuttle.transits.length ? `${objets(shuttle.transits.length)}` : "aucun objet"}</span>
+            {shuttle.transits.length > 0 && <Stops stops={stopsOf(shuttle.transits)} className="mt-0.5 text-xs text-zinc-400" />}
+          </span>
+        </label>)}
+        {canCreate && <label className="flex cursor-pointer items-start gap-3 rounded-xl p-2 hover:bg-[var(--crm-surface-2)]">
+          <input type="radio" name="shuttle" className="mt-1.5 h-4 w-4" checked={target === "new"} onChange={() => setTarget("new")} />
+          <span className="min-w-0 flex-1 space-y-2"><span className="flex items-center gap-2"><span className="font-semibold">Nouvelle navette</span><span className="rounded-md bg-[var(--crm-surface-3)] px-2 py-0.5 text-xs font-semibold">Nouvelle affectation</span></span>
+            {target === "new" && <><Input maxLength={100} value={newName} onChange={event => setNewName(event.target.value)} aria-label="Nom de la navette" /><Input type="date" min={now} max={earliestDue} value={newDate} onChange={event => setNewDate(event.target.value)} aria-label="Date de départ" /></>}
+          </span>
+        </label>}
+        {candidates.length === 0 && !canCreate && <p className="text-sm text-zinc-500">Aucune navette planifiée à venir.</p>}
+      </div>
+      <p className="flex items-start gap-2 rounded-xl bg-[var(--crm-surface-2)] p-3 text-xs text-zinc-400"><Info size={14} className="mt-0.5 shrink-0 text-sky-400" />Les objets rejoignent la navette choisie et sa tournée est recalculée. Chargement, départ et arrivée se suivent dans « Navettes v2 ».</p>
+    </div>}
   </Drawer>;
 }

@@ -37,7 +37,7 @@ export function Navettes({ canCreate, canUpdate }: { canCreate: boolean; canUpda
   }
 
   return <div className="flex min-h-screen flex-col">
-    <PageHeader title="Navettes" subtitle="Créez les navettes, puis affectez-leur des transits depuis la fiche de chaque demande." actions={canCreate && !formOpen && <Button size="sm" onClick={() => { setError(""); setFormOpen(true); }}><Plus size={16} />Nouvelle navette</Button>} />
+    <PageHeader title="Navettes" actions={canCreate && !formOpen && <Button size="sm" onClick={() => { setError(""); setFormOpen(true); }}><Plus size={16} />Nouvelle navette</Button>} />
     <div className="flex-1 space-y-6 p-4 sm:p-6">
       {formOpen && <form onSubmit={submit} className="max-w-2xl space-y-4 rounded-2xl border border-[var(--crm-border)] bg-[var(--crm-surface)] p-4">
         <h2 className="font-semibold">Nouvelle navette</h2>

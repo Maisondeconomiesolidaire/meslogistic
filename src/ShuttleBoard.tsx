@@ -75,7 +75,7 @@ export function ShuttleBoard({ canCreate, canUpdate }: { canCreate: boolean; can
   const unassigned = [...(board?.unassigned ?? [])].sort((a, b) => (a.dueDate ?? "9999").localeCompare(b.dueDate ?? "9999"));
 
   return <div className="flex min-h-screen flex-col lg:h-screen">
-    <PageHeader title="Demandes v2" subtitle="1. Créez une navette · 2. Ajoutez-y des demandes · 3. Départ puis Arrivée : toutes ses demandes suivent." actions={canCreate && <Button size="sm" onClick={() => setCreating(true)}><Plus size={16} />Nouvelle navette</Button>} />
+    <PageHeader title="Demandes v2" actions={canCreate && <Button size="sm" onClick={() => setCreating(true)}><Plus size={16} />Nouvelle navette</Button>} />
     <div className="flex-1 overflow-auto p-4 sm:p-6">
       {!board ? <FullSpinner label="Chargement des navettes…" /> : <div className="flex flex-col gap-4 lg:h-full lg:flex-row">
         <KanbanColumn title="À planifier" count={unassigned.length} accent={UNPLANNED_COLOR}>

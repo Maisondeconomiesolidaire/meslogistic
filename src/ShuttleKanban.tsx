@@ -32,7 +32,7 @@ export function ShuttleKanban({ canCreate, canUpdate }: { canCreate: boolean; ca
     .sort((a, b) => status === "terminee" ? b.scheduledDate.localeCompare(a.scheduledDate) : a.scheduledDate.localeCompare(b.scheduledDate));
 
   return <div className="flex min-h-screen flex-col lg:h-screen">
-    <PageHeader title="Navettes v2" subtitle="Suivi des navettes : chargement, départ, arrivée. Les objets s’affectent depuis « Demandes v3 »." actions={canCreate && <Button size="sm" onClick={() => setCreating(true)}><Plus size={16} />Nouvelle navette</Button>} />
+    <PageHeader title="Navettes v2" actions={canCreate && <Button size="sm" onClick={() => setCreating(true)}><Plus size={16} />Nouvelle navette</Button>} />
     <div className="flex-1 overflow-auto p-4 sm:p-6">
       {!board ? <FullSpinner label="Chargement des navettes…" /> : <div className="flex flex-col gap-4 lg:h-full lg:flex-row">
         {COLUMNS.map(({ status, title, empty }) => {
