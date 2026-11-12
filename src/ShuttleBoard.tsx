@@ -57,7 +57,7 @@ export function compatibility(request: Transit, transits: Transit[]): { score: n
 export const Stops = ({ stops, className = "" }: { stops: string[]; className?: string }) => stops.length ? <p className={`flex flex-wrap items-center gap-1 ${className}`}>{stops.map((stop, index) => <span key={`${stop}-${index}`} className="inline-flex items-center gap-1">{index > 0 && <ArrowRight size={12} className="shrink-0 opacity-60" />}<span>{shortLocation(stop)}</span></span>)}</p> : null;
 
 /**
- * Demandes : on raisonne en navettes. Une navette regroupe des demandes ;
+ * Demandes v2 : on raisonne en navettes. Une navette regroupe des demandes ;
  * c'est elle qui part (toutes ses demandes passent en transit) puis arrive
  * (toutes ses demandes sont disponibles à destination).
  */
@@ -76,7 +76,7 @@ export function ShuttleBoard({ canCreate, canUpdate }: { canCreate: boolean; can
   const unassigned = [...(board?.unassigned ?? [])].sort((a, b) => (a.dueDate ?? "9999").localeCompare(b.dueDate ?? "9999"));
 
   return <div className="flex min-h-screen flex-col lg:h-screen">
-    <PageHeader title="Demandes" actions={canCreate && <Button size="sm" onClick={() => setCreating(true)}><Plus size={16} />Nouvelle navette</Button>} />
+    <PageHeader title="Demandes v2" actions={canCreate && <Button size="sm" onClick={() => setCreating(true)}><Plus size={16} />Nouvelle navette</Button>} />
     <div className="flex-1 overflow-auto p-4 sm:p-6">
       {!board ? <FullSpinner label="Chargement des navettes…" /> : <div className="flex flex-col gap-4 lg:h-full lg:flex-row">
         <KanbanColumn title="À planifier" count={unassigned.length} accent={UNPLANNED_COLOR}>
