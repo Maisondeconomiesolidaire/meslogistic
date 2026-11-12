@@ -8,6 +8,7 @@ import { Button } from "./components/ui/Button";
 import { Drawer } from "./components/ui/Drawer";
 import { FullSpinner } from "./components/ui/Spinner";
 import { shortLocation, statusLabel, type Request } from "./Demandes";
+import { SlotTag } from "./StorageSlot";
 import { ArticlePreview, RequestDetail } from "./RequestDetail";
 import { CARD_COLOR, NewShuttle, STATUS, Stops, errorText, stopsOf, type Shuttle } from "./ShuttleBoard";
 import { today } from "./TransferPlanning";
@@ -103,6 +104,7 @@ function RequestRow({ request: r, shuttleName, selected, draggable, onClick, onD
     <span className="min-w-0 flex-1">
       <span className="flex items-start justify-between gap-2"><span className="line-clamp-2 font-semibold leading-snug">{r.title}</span>{draggable && <GripVertical size={15} className="mt-0.5 shrink-0 text-zinc-500 opacity-60 group-hover:opacity-100" />}</span>
       <span className="mt-1 flex items-center gap-1 text-xs font-semibold text-zinc-400"><span className="truncate">{shortLocation(r.origin)}</span><ArrowRight size={11} className="shrink-0" /><span className="truncate">{shortLocation(r.destination)}</span></span>
+      {r.storageSlot && <span className="mt-1 flex"><SlotTag slot={r.storageSlot} /></span>}
       <span className="mt-1.5 flex items-center justify-between gap-2 text-[11px]">
         <span className="flex min-w-0 items-center gap-1.5 truncate font-semibold" style={{ color: state.color }}><span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: state.color }} /><span className="truncate">{state.label}</span></span>
         <span className={`shrink-0 tabular-nums ${late ? "font-bold text-red-500" : soon ? "font-semibold text-amber-500" : "text-zinc-500"}`}>{r.dueDate ? `${late ? "en retard · " : ""}${shortDate(r.dueDate)}` : "sans échéance"}</span>
@@ -316,7 +318,7 @@ function ShuttleInline({ shuttle, canUpdate, dragging, dropActive, dropProps, on
             <button type="button" onClick={() => onSelectRequest(row._id)} className="flex min-w-0 flex-1 items-center gap-3 text-left">
               <Thumb src={row.photoUrl} size={44} className="bg-[var(--crm-surface-3)]" />
               <span className="min-w-0"><span className="block truncate font-semibold">{row.quantity} {row.unit} · {row.title}</span>
-                <span className="mt-0.5 flex items-center gap-1 text-xs text-zinc-400">{shortLocation(row.origin)}<ArrowRight size={11} />{shortLocation(row.destination)}{row.dueDate && <span className={late ? "ml-1 font-semibold text-amber-500" : "ml-1 text-zinc-500"}>· {shortDate(row.dueDate)}</span>}{late && <AlertTriangle size={12} className="text-amber-500" />}</span></span>
+                <span className="mt-0.5 flex items-center gap-1 text-xs text-zinc-400">{shortLocation(row.origin)}<ArrowRight size={11} />{shortLocation(row.destination)}{row.dueDate && <span className={late ? "ml-1 font-semibold text-amber-500" : "ml-1 text-zinc-500"}>· {shortDate(row.dueDate)}</span>}{late && <AlertTriangle size={12} className="text-amber-500" />}</span>{row.storageSlot && <span className="mt-1 flex"><SlotTag slot={row.storageSlot} /></span>}</span>
             </button>
             <span className="flex shrink-0 flex-col items-end gap-1 text-xs">
               {planned && row.status === "a_preparer" ? <label className={`flex items-center gap-1.5 font-semibold ${row.loadedAt ? "text-green-500" : "text-amber-500"}`}><input type="checkbox" disabled={!canUpdate || busy} checked={Boolean(row.loadedAt)} onChange={event => void run(() => setLoaded({ shuttleId: shuttle._id, requestId: row._id, loaded: event.target.checked }))} />{row.loadedAt ? "Chargé" : "À charger"}</label>
@@ -373,6 +375,7 @@ function RequestPanel({ request: r, shuttleName, onClose, onOpenFull }: { reques
         <div><dt className="text-xs text-zinc-500">Navette</dt><dd className="flex items-center gap-1.5 font-medium">{r.shuttleId ? <><Bus size={13} />{shuttleName ?? "…"}</> : "Aucune"}</dd></div>
         <div><dt className="text-xs text-zinc-500">Responsable</dt><dd className="font-medium">{r.assignee || "Non attribué"}</dd></div>
         <div><dt className="text-xs text-zinc-500">Réception</dt><dd className="font-medium">{r.receivedQuantity ?? 0} / {r.quantity} {r.unit}</dd></div>
+        {r.storageSlot && <div className="col-span-2"><dt className="text-xs text-zinc-500">Emplacement{r.storageSlot.depot ? ` · ${shortLocation(r.storageSlot.depot)}` : ""}</dt><dd className="mt-0.5"><SlotTag slot={r.storageSlot} className="text-xs" /></dd></div>}
       </dl>
       {r.notes && <p className="whitespace-pre-wrap rounded-xl bg-[var(--crm-surface-2)] p-3 text-sm">{r.notes}</p>}
       <ArticlePreview materialId={r.materialId} title={r.title} quantity={r.quantity} unit={r.unit} />

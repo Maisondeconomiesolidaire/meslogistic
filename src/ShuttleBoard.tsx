@@ -13,6 +13,7 @@ import { Drawer } from "./components/ui/Drawer";
 import { FullSpinner } from "./components/ui/Spinner";
 import { EmptyState } from "./components/ui/EmptyState";
 import { shortLocation } from "./Demandes";
+import { SlotTag } from "./StorageSlot";
 import { RequestDetail } from "./RequestDetail";
 import { today } from "./TransferPlanning";
 import { DatePicker } from "./components/ui/DatePicker";
@@ -105,6 +106,7 @@ export function RequestChip({ request, onOpen, children }: { request: Transit; o
       <span className="block min-w-0 flex-1">
       <span className="flex items-start justify-between gap-2"><span className="min-w-0 truncate font-semibold">{request.quantity} {request.unit} · {request.title}</span>{request.fromOrder && <span className="shrink-0 rounded-md px-1.5 text-[10px] font-bold text-zinc-950" style={{ backgroundColor: TRANSIT_COLOR }}>BatiRE</span>}</span>
       <span className="mt-1.5 flex items-center gap-1.5 text-xs font-semibold"><MapPin size={12} className="shrink-0" />{shortLocation(request.origin)}<ArrowRight size={12} className="shrink-0" />{shortLocation(request.destination)}</span>
+      {request.storageSlot && <span className="mt-1 flex"><SlotTag slot={request.storageSlot} /></span>}
       <span className="mt-1 flex items-center justify-between gap-2 text-[11px] text-zinc-500"><span className="truncate">{request.customerName || request.reference}</span>{request.dueDate && <span className={`shrink-0 tabular-nums ${late ? "font-semibold text-red-500" : ""}`}>échéance {shortDate(request.dueDate)}</span>}</span>
       </span>
     </button>

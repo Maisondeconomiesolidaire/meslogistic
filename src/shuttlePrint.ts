@@ -1,4 +1,5 @@
 import { shortLocation } from "./Demandes";
+import { slotText } from "./StorageSlot";
 import type { Shuttle } from "./ShuttleBoard";
 import type { NavPlan } from "./shuttleRoute";
 
@@ -43,7 +44,7 @@ export function printShuttle(shuttle: Shuttle, plan: NavPlan | null) {
   const objects = shuttle.transits.map(row => `<tr>
       <td class="photo">${row.photoUrl ? `<img src="${escape(row.photoUrl)}" alt="" />` : `<div class="nophoto"></div>`}</td>
       <td><strong>${escape(`${row.quantity} ${row.unit} · ${row.title}`)}</strong>${row.reference ? `<div class="sub">${escape(row.reference)}</div>` : ""}</td>
-      <td>${escape(shortLocation(row.origin))}</td>
+      <td>${escape(shortLocation(row.origin))}${row.storageSlot ? `<div class="sub">Emplacement : ${escape(slotText(row.storageSlot))}</div>` : ""}</td>
       <td>${escape(shortLocation(row.destination))}</td>
       <td>${escape(whereNow(row))}</td>
     </tr>`).join("");

@@ -1,7 +1,7 @@
 /** Types et utilitaires partagés des demandes de transit (la page Demandes est ShuttleBoard). */
 import type { Doc } from "../convex/_generated/dataModel";
 import { TRANSIT_COLOR } from "./components/crm/LogisticsCard";
-export type Request = Doc<"mlRequests"> & { collected?: boolean; photoUrl?: string | null };
+export type Request = Doc<"mlRequests"> & { collected?: boolean; photoUrl?: string | null; storageSlot?: { label: string; kind?: "stockage" | "depart" | "arrivee"; depot?: string } | null };
 export const stages = [{ key: "a_preparer", label: "Nouveau", color: "#3b82f6" }, { key: "en_transit", label: "En transit", color: TRANSIT_COLOR }, { key: "receptionnee", label: "Disponible à destination", color: "#10b981" }] as const;
 export const statusLabel = (status: Request["status"]) => status === "annulee" ? "Annulée" : stages.find(stage => stage.key === status)?.label ?? status;
 /** Noms courts des lieux, identiques aux cartes Bâtire. */
