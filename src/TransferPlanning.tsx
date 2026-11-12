@@ -54,7 +54,7 @@ export function TransferPlanning({ request, canUpdate, onAssigned }: { request: 
       {request.shuttleId && editable && <Button size="sm" variant="ghost" disabled={busy} onClick={() => void choose(null)}>Retirer</Button>}
     </div>
     {shuttles === undefined ? <p className="text-sm text-zinc-500">Chargement des navettes…</p>
-      : assignableShuttles(shuttles, request.shuttleId).length === 0 ? <p className="rounded-xl bg-[var(--crm-surface-2)] p-3 text-sm text-zinc-500">Aucune navette à venir. Créez-en une depuis la page <Link className="font-semibold text-brand-500" to="/navettes">Navettes</Link>.</p>
+      : assignableShuttles(shuttles, request.shuttleId).length === 0 ? <p className="rounded-xl bg-[var(--crm-surface-2)] p-3 text-sm text-zinc-500">Aucune navette à venir. Créez-en une depuis la page <Link className="font-semibold text-brand-500" to="/demandes">Demandes</Link>.</p>
       : <ul className="max-h-[420px] space-y-2 overflow-y-auto pr-1">{assignableShuttles(shuttles, request.shuttleId).map(shuttle => {
         const current = request.shuttleId === shuttle._id;
         const others = shuttle.transits.filter(transit => transit._id !== request._id);
