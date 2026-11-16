@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, type DragEvent, type ReactNode } from "react";
 import { useMutation, useQuery } from "convex/react";
-import { AlertTriangle, ArrowLeft, ArrowRight, Bus, CalendarClock, Check, ChevronLeft, ChevronRight, ClipboardCheck, ExternalLink, GripVertical, MapPin, PackageCheck, Plus, Printer, Search, Trash2, Truck, Undo2, X } from "lucide-react";
+import { AlertTriangle, ArrowLeft, ArrowRight, Bus, CalendarClock, CarFront, Check, ChevronLeft, ChevronRight, ClipboardCheck, ExternalLink, GripVertical, MapPin, PackageCheck, Plus, Printer, Search, Trash2, Truck, Undo2, X } from "lucide-react";
 import { api } from "../convex/_generated/api";
 import type { Id } from "../convex/_generated/dataModel";
 import { Thumb, TRANSIT_COLOR, shortDate } from "./components/crm/LogisticsCard";
@@ -186,7 +186,7 @@ function ShuttleSection({ shuttles, openId, setOpenId, dragging, canCreate, canU
     return <button key={shuttle._id} type="button" {...dropProps(shuttle)} onClick={event => { event.stopPropagation(); setOpenId(shuttle._id); }} title={`${shuttle.name} · ${SHUTTLE_LABEL[shuttle.status]} · ${objets(shuttle.transits.length)}`}
       className={`flex w-full min-w-0 shrink-0 items-center gap-1.5 rounded-md text-left font-semibold text-zinc-950 ${large ? "px-2.5 py-1.5 text-xs" : "px-1.5 py-0.5 text-[11px]"} ${target ? "ring-2 ring-white" : droppable ? "ring-2 ring-brand-500" : "hover:brightness-110"}`}
       style={{ backgroundColor: CARD_COLOR[shuttle.status] }}>
-      <span className="min-w-0 flex-1 truncate">{shuttle.name}</span><span className="shrink-0 tabular-nums opacity-70">{shuttle.transits.length}</span>
+      {shuttle.fromReservation && <CarFront size={large ? 13 : 11} className="shrink-0" aria-label="Trajet d'un salarié (réservation de véhicule)" />}<span className="min-w-0 flex-1 truncate">{shuttle.name}</span><span className="shrink-0 tabular-nums opacity-70">{shuttle.transits.length}</span>
     </button>;
   };
 
@@ -296,6 +296,7 @@ function ShuttleInline({ shuttle, canUpdate, dragging, dropActive, dropProps, on
       <div className="min-w-0">
         <p className="flex items-center gap-2 text-lg font-bold"><Bus size={18} />{shuttle.name}<span className="rounded-full px-2.5 py-0.5 text-xs font-semibold text-zinc-950" style={{ backgroundColor: STATUS[shuttle.status].color }}>{SHUTTLE_LABEL[shuttle.status]}</span></p>
         <p className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-zinc-400"><span className="flex items-center gap-1 capitalize"><CalendarClock size={13} />{longDate(shuttle.scheduledDate)}</span>{shuttle.origin && <span className="flex items-center gap-1"><MapPin size={13} />{shortLocation(shuttle.origin)}{shuttle.destination ? <><ArrowRight size={12} />{shortLocation(shuttle.destination)}</> : null}</span>}<Stops stops={stopsOf(shuttle.transits)} className="font-semibold text-zinc-300" /></p>
+        {shuttle.driverName && <p className="mt-1 flex items-center gap-1.5 text-xs font-semibold text-zinc-300"><CarFront size={13} />Réservation véhicule de {shuttle.driverName}{shuttle.vehicleName ? ` · ${shuttle.vehicleName}` : ""}</p>}
       </div>
       {planned && total > 0 && <span className={`flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold ${loaded === total ? "bg-green-500/15 text-green-500" : "bg-amber-500/15 text-amber-500"}`}><ClipboardCheck size={14} />{loaded}/{objets(total)} chargé{loaded > 1 ? "s" : ""}</span>}
       <div className="ml-auto flex flex-wrap gap-2">
