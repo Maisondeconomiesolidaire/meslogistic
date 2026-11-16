@@ -23,6 +23,7 @@ import {
   formatUserName,
 } from "./lib";
 import { recycappSecretKey, stripeRequest } from "./stripe";
+import { sendBillingDocMail } from "./batireEmails";
 import { btCondition, btMaterialStatus, btUnit } from "./schema";
 
 const PAGE_MATERIAUX = "batire:materiaux";
@@ -34,13 +35,13 @@ function isRecyclerieFurniture(category: string) {
 
 /**
  * Mobilier → compte Stripe Recyclerie. Tout le reste → compte Stripe
- * MatériauSol / Déchet'Lab, dont la clé est administrée par Bennes Pro.
+ * MATERIOSOL / Déchet'Lab, dont la clé est administrée par Bennes Pro.
  */
 function stripeKeyForCategory(category: string) {
   if (isRecyclerieFurniture(category)) return recycappSecretKey();
   if (!env.BENNESPRO_STRIPE_SECRET_KEY) {
     throw new ConvexError(
-      "Paiement en ligne indisponible : la clé Stripe MatériauSol / Déchet'Lab n'est pas configurée côté Convex.",
+      "Paiement en ligne indisponible : la clé Stripe MATERIOSOL / Déchet'Lab n'est pas configurée côté Convex.",
     );
   }
   return env.BENNESPRO_STRIPE_SECRET_KEY;
@@ -1019,6 +1020,9 @@ export const markOrderPaid = internalMutation({
       stripePaymentIntentId,
       paidAt: Date.now(),
     });
+    // Commande réglée : sa facture est émise d'office (étape « Payé »).
+    // Une erreur de facturation ne doit jamais bloquer l'encaissement : la facture reste générable à la main.
+    try { await ensureOrderInvoice(ctx, orderId); } catch (error) { console.error("Facture automatique impossible", orderId, error); }
 
     const material = await ctx.db.get(order.materialId);
     // Le reçu part de la mutation qui encaisse : c'est le seul endroit par
@@ -4045,5 +4049,346 @@ export const removeStorageSlot = mutation({
   handler: async (ctx, { slotId }) => {
     await requireCrmPermission(ctx, PAGE_MATERIAUX, "update");
     await ctx.db.delete(slotId);
+  },
+});
+
+
+/* ------------------------------------------------------------------ */
+/* Facturation : devis et factures (Recyclerie / MATERIOSOL)           */
+/* ------------------------------------------------------------------ */
+
+type Issuer = "recyclerie" | "materiosol";
+const issuerOfCategory = (category: string): Issuer => isRecyclerieFurniture(category) ? "recyclerie" : "materiosol";
+const ISSUER_PREFIX: Record<Issuer, string> = { recyclerie: "RPB", materiosol: "MS" };
+const fold = (value: string) => value.normalize("NFD").replace(/[̀-ͯ]/g, "").toLocaleLowerCase("fr-FR");
+const clean = (value?: string, max = 200) => { const text = value?.trim().replace(/\s+/g, " "); return text ? text.slice(0, max) : undefined; };
+const isoDay = (at: number) => new Date(at).toLocaleDateString("sv-SE", { timeZone: "Europe/Paris" });
+const addDays = (day: string, days: number) => { const date = new Date(`${day}T12:00:00Z`); date.setUTCDate(date.getUTCDate() + days); return date.toISOString().slice(0, 10); };
+
+const billingClientFields = {
+  company: v.optional(v.string()), firstName: v.optional(v.string()), lastName: v.optional(v.string()),
+  email: v.optional(v.string()), phone: v.optional(v.string()), address: v.optional(v.string()),
+  postalCode: v.optional(v.string()), city: v.optional(v.string()), siret: v.optional(v.string()), vatNumber: v.optional(v.string()),
+};
+
+function cleanClient(client: Record<string, string | undefined>) {
+  const result = {
+    company: clean(client.company), firstName: clean(client.firstName, 100), lastName: clean(client.lastName, 100),
+    email: clean(client.email, 200)?.toLowerCase(), phone: clean(client.phone, 40), address: clean(client.address, 300),
+    postalCode: clean(client.postalCode, 20), city: clean(client.city, 120), siret: clean(client.siret, 30), vatNumber: clean(client.vatNumber, 30),
+  };
+  if (!result.company && !result.firstName && !result.lastName) throw new ConvexError("Indiquez le nom du client ou sa raison sociale.");
+  if (result.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(result.email)) throw new ConvexError("Adresse email du client invalide.");
+  return result;
+}
+
+/** Articles Bâtire à ajouter à un devis, avec leur émetteur de facture. */
+export const searchBillingMaterials = query({
+  args: { search: v.string() },
+  handler: async (ctx, { search }) => {
+    await requireCrmPermission(ctx, PAGE_DEMANDES, "read");
+    const needle = fold(search.trim());
+    if (needle.length < 2) return [];
+    const rows = await ctx.db.query("btMaterials").order("desc").take(3000);
+    const found = rows.filter(material => [material.title, material.reference, material.qrReference, material.brand].some(value => value && fold(value).includes(needle))).slice(0, 20);
+    return await Promise.all(found.map(async material => ({
+      _id: material._id, title: material.title, price: material.price, unit: material.unit, quantity: material.quantity, status: material.status,
+      category: material.category, reference: material.reference ?? material.qrReference, depot: material.depot,
+      issuer: issuerOfCategory(material.category), thumbUrl: material.photos[0] ? await thumbnailUrl(ctx, material.photos[0]) : null,
+    })));
+  },
+});
+
+/** Clients : ceux de la facturation et les comptes de la boutique (profils donateurs / clients). */
+export const searchBillingClients = query({
+  args: { search: v.string() },
+  handler: async (ctx, { search }) => {
+    await requireCrmPermission(ctx, PAGE_DEMANDES, "read");
+    const needle = fold(search.trim());
+    if (needle.length < 2) return [];
+    const match = (values: Array<string | undefined>) => values.some(value => value && fold(value).includes(needle));
+    const billing = (await ctx.db.query("btBillingClients").take(2000)).filter(client => match([client.company, client.firstName, client.lastName, client.email, client.phone, client.city, `${client.firstName ?? ""} ${client.lastName ?? ""}`]));
+    const known = new Set(billing.map(client => client.email).filter(Boolean));
+    const profiles = (await ctx.db.query("btDonorProfiles").take(3000)).filter(profile => !(profile.email && known.has(profile.email.toLowerCase())) && match([profile.company, profile.firstName, profile.lastName, profile.email, profile.phone, profile.city, `${profile.firstName ?? ""} ${profile.lastName ?? ""}`]));
+    const pick = (row: { company?: string; firstName?: string; lastName?: string; email?: string; phone?: string; address?: string; postalCode?: string; city?: string; siret?: string }) =>
+      ({ company: row.company, firstName: row.firstName, lastName: row.lastName, email: row.email, phone: row.phone, address: row.address, postalCode: row.postalCode, city: row.city, siret: row.siret });
+    return [
+      ...billing.slice(0, 15).map(client => ({ source: "facturation" as const, clientId: client._id, ...pick(client), vatNumber: client.vatNumber })),
+      ...profiles.slice(0, 10).map(profile => ({ source: "boutique" as const, clientId: undefined, ...pick(profile), vatNumber: undefined })),
+    ];
+  },
+});
+
+export const createBillingClient = mutation({
+  args: billingClientFields,
+  handler: async (ctx, args) => {
+    await requireCrmPermission(ctx, PAGE_DEMANDES, "update");
+    const client = cleanClient(args);
+    const now = Date.now();
+    return await ctx.db.insert("btBillingClients", { ...client, createdAt: now, updatedAt: now });
+  },
+});
+
+export const listBillingDocs = query({
+  args: { type: v.union(v.literal("devis"), v.literal("facture")) },
+  handler: async (ctx, { type }) => {
+    await requireCrmPermission(ctx, PAGE_DEMANDES, "read");
+    const docs = await ctx.db.query("btBillingDocs").withIndex("by_type", q => q.eq("type", type)).order("desc").take(500);
+    return await Promise.all(docs.map(async doc => {
+      const linked = doc.invoiceId ? await ctx.db.get(doc.invoiceId) : doc.sourceQuoteId ? await ctx.db.get(doc.sourceQuoteId) : null;
+      const order = doc.orderId ? await ctx.db.get(doc.orderId) : null;
+      return { ...doc, client: await completeClient(ctx, doc.client, { clientId: doc.clientId, userId: order?.userId }), linkedNumber: linked?.number };
+    }));
+  },
+});
+
+export const billingDocById = internalQuery({
+  args: { id: v.id("btBillingDocs") },
+  handler: async (ctx, { id }) => await ctx.db.get(id),
+});
+
+export const markBillingDocSent = internalMutation({
+  args: { id: v.id("btBillingDocs"), to: v.string() },
+  handler: async (ctx, { id, to }) => { await ctx.db.patch(id, { sentAt: Date.now(), sentTo: to }); },
+});
+
+/** Envoie le PDF (généré dans le navigateur, celui que l'équipe vient de prévisualiser) au client. */
+export const sendBillingDoc = action({
+  args: { id: v.id("btBillingDocs"), to: v.string(), message: v.optional(v.string()), pdfBase64: v.string() },
+  handler: async (ctx, args) => {
+    const access = await ctx.runQuery(api.permissions.myAccess, {});
+    if (!accessAllows(access, PAGE_DEMANDES, "update")) throw new ConvexError("Accès CRM insuffisant.");
+    const doc = await ctx.runQuery(internal.batire.billingDocById, { id: args.id });
+    if (!doc) throw new ConvexError("Document introuvable.");
+    const to = args.to.trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(to)) throw new ConvexError("Adresse email invalide.");
+    if (!/^[A-Za-z0-9+/]+=*$/.test(args.pdfBase64) || args.pdfBase64.length > 4_000_000) throw new ConvexError("PDF invalide.");
+    const issuerName = doc.issuer === "recyclerie" ? "Recyclerie du Pays de Bray" : "MATERIOSOL";
+    const fr = (day?: string) => day ? new Date(`${day}T12:00:00Z`).toLocaleDateString("fr-FR", { timeZone: "Europe/Paris" }) : undefined;
+    const name = doc.client.company ? "" : [doc.client.firstName, doc.client.lastName].filter(Boolean).join(" ");
+    const ok = await sendBillingDocMail({
+      to, name, type: doc.type, number: doc.number, issuerName,
+      total: (doc.totalCents / 100).toLocaleString("fr-FR", { style: "currency", currency: "EUR" }),
+      until: fr(doc.type === "devis" ? doc.validUntil : doc.dueDate), message: args.message?.trim().slice(0, 2000) || undefined, pdfBase64: args.pdfBase64,
+    });
+    if (!ok) throw new ConvexError("L’email n’a pas pu être envoyé. Réessayez dans un instant.");
+    await ctx.runMutation(internal.batire.markBillingDocSent, { id: args.id, to });
+  },
+});
+
+type BillingClientData = Doc<"btBillingDocs">["client"];
+const CLIENT_KEYS = ["company", "firstName", "lastName", "email", "phone", "address", "postalCode", "city", "siret", "vatNumber"] as const;
+
+/**
+ * Coordonnées complètes d'un client : ce qui est saisi d'abord, puis sa fiche
+ * de facturation, puis son compte boutique (adresse, SIRET…). Une demande ne
+ * porte que nom, email et téléphone.
+ */
+async function completeClient(ctx: QueryCtx | MutationCtx, client: BillingClientData, refs: { clientId?: Id<"btBillingClients">; userId?: string } = {}): Promise<BillingClientData> {
+  const billing = (refs.clientId ? await ctx.db.get(refs.clientId) : null)
+    ?? (client.email ? await ctx.db.query("btBillingClients").withIndex("by_email", q => q.eq("email", client.email!.toLowerCase())).first() : null);
+  const profile = refs.userId ? await ctx.db.query("btDonorProfiles").withIndex("by_clerkId", q => q.eq("clerkId", refs.userId!)).unique() : null;
+  const result: BillingClientData = { ...client };
+  for (const key of CLIENT_KEYS) {
+    if (result[key]?.trim()) continue;
+    const value = (billing as Record<string, unknown> | null)?.[key] ?? (profile as Record<string, unknown> | null)?.[key];
+    if (typeof value === "string" && value.trim()) result[key] = value.trim();
+  }
+  return result;
+}
+
+/** Client d'une demande, complété (adresse…) pour pré-remplir un devis / une facture. */
+export const orderBillingClient = query({
+  args: { orderId: v.id("btOrders") },
+  handler: async (ctx, { orderId }) => {
+    await requireCrmPermission(ctx, PAGE_DEMANDES, "read");
+    const order = await ctx.db.get(orderId);
+    if (!order) return null;
+    const { company, firstName, lastName, email, phone } = order.customer;
+    return await completeClient(ctx, { company, firstName, lastName, email, phone }, { userId: order.userId });
+  },
+});
+
+/** Devis et factures d'une demande (onglet Facturation de la popup). */
+export const orderBillingDocs = query({
+  args: { orderId: v.id("btOrders") },
+  handler: async (ctx, { orderId }) => {
+    await requireCrmPermission(ctx, PAGE_DEMANDES, "read");
+    const docs = await ctx.db.query("btBillingDocs").withIndex("by_orderId", q => q.eq("orderId", orderId)).order("desc").collect();
+    const order = await ctx.db.get(orderId);
+    return await Promise.all(docs.map(async doc => {
+      const linked = doc.invoiceId ? await ctx.db.get(doc.invoiceId) : doc.sourceQuoteId ? await ctx.db.get(doc.sourceQuoteId) : null;
+      return { ...doc, client: await completeClient(ctx, doc.client, { clientId: doc.clientId, userId: order?.userId }), linkedNumber: linked?.number };
+    }));
+  },
+});
+
+async function nextBillingNumber(ctx: MutationCtx, issuer: Issuer, type: "devis" | "facture", issueDate: string) {
+  const year = Number(issueDate.slice(0, 4));
+  const last = await ctx.db.query("btBillingDocs").withIndex("by_issuer_type_year_seq", q => q.eq("issuer", issuer).eq("type", type).eq("year", year)).order("desc").first();
+  const seq = (last?.seq ?? 0) + 1;
+  return { year, seq, number: `${type === "devis" ? "DEV" : "FAC"}-${ISSUER_PREFIX[issuer]}-${year}-${String(seq).padStart(4, "0")}` };
+}
+
+/**
+ * Émet un devis ou une facture. L'émetteur découle des articles : mobilier →
+ * Recyclerie, le reste → MATERIOSOL. Un document ne mélange pas les deux.
+ */
+export const createBillingDoc = mutation({
+  args: {
+    type: v.union(v.literal("devis"), v.literal("facture")),
+    issuer: v.optional(v.union(v.literal("recyclerie"), v.literal("materiosol"))),
+    clientId: v.optional(v.id("btBillingClients")),
+    client: v.object(billingClientFields),
+    lines: v.array(v.object({ materialId: v.optional(v.id("btMaterials")), label: v.string(), quantity: v.number(), unit: v.optional(v.string()), unitPriceCents: v.number() })),
+    vatRate: v.number(),
+    validityDays: v.optional(v.number()),
+    dueDays: v.optional(v.number()),
+    notes: v.optional(v.string()),
+    orderId: v.optional(v.id("btOrders")),
+  },
+  handler: async (ctx, args) => {
+    await requireCrmPermission(ctx, PAGE_DEMANDES, "update");
+    const actor = await requireUser(ctx);
+    const sourceOrder = args.orderId ? await ctx.db.get(args.orderId) : null;
+    if (args.orderId && !sourceOrder) throw new ConvexError("Demande introuvable.");
+    const client = await completeClient(ctx, cleanClient(args.client), { clientId: args.clientId, userId: sourceOrder?.userId });
+    if (!args.lines.length || args.lines.length > 60) throw new ConvexError("Le document doit compter entre 1 et 60 lignes.");
+    if (![0, 5.5, 10, 20].includes(args.vatRate)) throw new ConvexError("Taux de TVA invalide.");
+    const issuers = new Set<Issuer>();
+    const lines = [];
+    for (const line of args.lines) {
+      const label = clean(line.label, 300);
+      if (!label) throw new ConvexError("Chaque ligne doit avoir une désignation.");
+      if (!Number.isFinite(line.quantity) || line.quantity <= 0 || line.quantity > 1_000_000) throw new ConvexError(`Quantité invalide pour « ${label} ».`);
+      // Une ligne libre peut être négative (remise, code promo) ; un article, non.
+      if (!Number.isInteger(line.unitPriceCents) || line.unitPriceCents < (line.materialId ? 0 : -100_000_000) || line.unitPriceCents > 100_000_000) throw new ConvexError(`Prix invalide pour « ${label} ».`);
+      if (line.materialId) {
+        const material = await ctx.db.get(line.materialId);
+        if (!material) throw new ConvexError(`Article introuvable : « ${label} ».`);
+        issuers.add(issuerOfCategory(material.category));
+      }
+      lines.push({ materialId: line.materialId, label, quantity: line.quantity, unit: clean(line.unit, 20), unitPriceCents: line.unitPriceCents });
+    }
+    if (issuers.size > 1) throw new ConvexError("Le mobilier est facturé par la Recyclerie et les autres matériaux par MATERIOSOL : faites deux documents.");
+    const issuer = [...issuers][0] ?? args.issuer;
+    if (!issuer) throw new ConvexError("Choisissez l’émetteur du document.");
+    const totalCents = lines.reduce((sum, line) => sum + Math.round(line.quantity * line.unitPriceCents), 0);
+    if (totalCents < 0) throw new ConvexError("Le total du document ne peut pas être négatif.");
+    const now = Date.now();
+    const issueDate = isoDay(now);
+    const { year, seq, number } = await nextBillingNumber(ctx, issuer, args.type, issueDate);
+    let clientId = args.clientId;
+    if (!clientId && client.email) clientId = (await ctx.db.query("btBillingClients").withIndex("by_email", q => q.eq("email", client.email)).first())?._id;
+    if (!clientId) clientId = await ctx.db.insert("btBillingClients", { ...client, createdAt: now, updatedAt: now });
+    const days = (value: number | undefined, fallback: number) => Math.min(365, Math.max(0, Math.round(value ?? fallback)));
+    const id = await ctx.db.insert("btBillingDocs", {
+      type: args.type, issuer, number, year, seq, status: args.type === "devis" ? "en_attente" : "a_regler",
+      clientId, client, lines, vatRate: args.vatRate, totalCents, issueDate,
+      ...(args.type === "devis" ? { validUntil: addDays(issueDate, days(args.validityDays, 30)) } : { dueDate: addDays(issueDate, days(args.dueDays, 30)) }),
+      notes: clean(args.notes, 1000), orderId: args.orderId, createdBy: actor.name ?? actor.email ?? actor.subject, createdAt: now, statusAt: now,
+    });
+    return { id, number };
+  },
+});
+
+export const setQuoteStatus = mutation({
+  args: { id: v.id("btBillingDocs"), status: v.union(v.literal("en_attente"), v.literal("accepte"), v.literal("refuse"), v.literal("annule")) },
+  handler: async (ctx, { id, status }) => {
+    await requireCrmPermission(ctx, PAGE_DEMANDES, "update");
+    const doc = await ctx.db.get(id);
+    if (!doc || doc.type !== "devis") throw new ConvexError("Devis introuvable.");
+    if (doc.invoiceId) throw new ConvexError("Ce devis a déjà été facturé.");
+    await ctx.db.patch(id, { status, statusAt: Date.now() });
+  },
+});
+
+/** Devis accepté → facture (mêmes lignes, client et émetteur), numérotée à part. */
+export const convertQuoteToInvoice = mutation({
+  args: { id: v.id("btBillingDocs"), dueDays: v.optional(v.number()) },
+  handler: async (ctx, { id, dueDays }) => {
+    await requireCrmPermission(ctx, PAGE_DEMANDES, "update");
+    const actor = await requireUser(ctx);
+    const quote = await ctx.db.get(id);
+    if (!quote || quote.type !== "devis") throw new ConvexError("Devis introuvable.");
+    if (quote.invoiceId) throw new ConvexError("Ce devis a déjà été facturé.");
+    if (quote.status === "refuse" || quote.status === "annule") throw new ConvexError("Un devis refusé ou annulé ne peut pas être facturé.");
+    const now = Date.now();
+    const issueDate = isoDay(now);
+    const { year, seq, number } = await nextBillingNumber(ctx, quote.issuer, "facture", issueDate);
+    const invoiceId = await ctx.db.insert("btBillingDocs", {
+      type: "facture", issuer: quote.issuer, number, year, seq, status: "a_regler", clientId: quote.clientId, client: quote.client, lines: quote.lines,
+      vatRate: quote.vatRate, totalCents: quote.totalCents, issueDate, dueDate: addDays(issueDate, Math.min(365, Math.max(0, Math.round(dueDays ?? 30)))),
+      notes: quote.notes, sourceQuoteId: quote._id, orderId: quote.orderId, createdBy: actor.name ?? actor.email ?? actor.subject, createdAt: now, statusAt: now,
+    });
+    await ctx.db.patch(quote._id, { status: "accepte", invoiceId, statusAt: now });
+    return { id: invoiceId, number };
+  },
+});
+
+export const setInvoicePaid = mutation({
+  args: { id: v.id("btBillingDocs"), paid: v.boolean(), paymentMethod: v.optional(v.string()) },
+  handler: async (ctx, { id, paid, paymentMethod }) => {
+    await requireCrmPermission(ctx, PAGE_DEMANDES, "update");
+    const doc = await ctx.db.get(id);
+    if (!doc || doc.type !== "facture") throw new ConvexError("Facture introuvable.");
+    const now = Date.now();
+    await ctx.db.patch(id, paid ? { status: "payee", paidAt: now, paymentMethod: clean(paymentMethod, 60), statusAt: now } : { status: "a_regler", paidAt: undefined, paymentMethod: undefined, statusAt: now });
+  },
+});
+
+
+const PAYMENT_LABELS: Record<string, string> = { card: "Carte bancaire", cash: "Espèces", bank_transfer: "Virement" };
+
+/**
+ * Facture d'une demande payée : lot, transfert, remise du code promo, au
+ * montant réellement encaissé. Ne fait rien si la demande a déjà la sienne.
+ */
+async function ensureOrderInvoice(ctx: MutationCtx, orderId: Id<"btOrders">, createdBy = "Automatique (paiement)") {
+  const order = await ctx.db.get(orderId);
+  if (!order || order.status !== "payee") return null;
+  const existing = (await ctx.db.query("btBillingDocs").withIndex("by_orderId", q => q.eq("orderId", orderId)).collect()).find(doc => doc.type === "facture");
+  if (existing) return existing._id;
+  const material = await ctx.db.get(order.materialId);
+  const issuer = issuerOfCategory(material?.category ?? "");
+  const fee = order.pickupFeeCents ?? 0;
+  const discount = order.discountCents ?? 0;
+  const goods = order.amountCents - fee + discount;
+  const unitCents = Math.round(order.unitPrice * 100);
+  // Quantité fractionnaire dont l'arrondi diffère de l'encaissé : une seule ligne au montant exact.
+  const lot = Math.round(order.quantity * unitCents) === goods
+    ? { materialId: order.materialId, label: order.materialTitle, quantity: order.quantity, unit: order.unit, unitPriceCents: unitCents }
+    : { materialId: order.materialId, label: `${order.materialTitle} — ${order.quantity} ${order.unit}`, quantity: 1, unit: undefined, unitPriceCents: goods };
+  const lines = [lot,
+    ...(fee ? [{ materialId: undefined, label: "Transfert vers le lieu de retrait", quantity: 1, unit: undefined, unitPriceCents: fee }] : []),
+    ...(discount ? [{ materialId: undefined, label: `Remise${order.promoCode ? ` · code ${order.promoCode}` : ""}`, quantity: 1, unit: undefined, unitPriceCents: -discount }] : []),
+  ];
+  const now = Date.now();
+  const issueDate = isoDay(now);
+  const { year, seq, number } = await nextBillingNumber(ctx, issuer, "facture", issueDate);
+  const customer = order.customer;
+  const client = await completeClient(ctx, { company: customer.company, firstName: customer.firstName, lastName: customer.lastName, email: customer.email, phone: customer.phone }, { userId: order.userId });
+  const clientId = (await ctx.db.query("btBillingClients").withIndex("by_email", q => q.eq("email", customer.email)).first())?._id
+    ?? await ctx.db.insert("btBillingClients", { ...client, createdAt: now, updatedAt: now });
+  return await ctx.db.insert("btBillingDocs", {
+    type: "facture", issuer, number, year, seq, status: "payee", clientId, client, lines, vatRate: 20,
+    totalCents: lines.reduce((sum, line) => sum + Math.round(line.quantity * line.unitPriceCents), 0),
+    issueDate, dueDate: issueDate, notes: `Demande Bâtire #${order.pickupReference ?? order.purchaseReference ?? order.reference}`,
+    orderId, paidAt: order.paidAt ?? now, paymentMethod: PAYMENT_LABELS[order.paymentMethod ?? "card"],
+    createdBy, createdAt: now, statusAt: now,
+  });
+}
+
+/** Pour une demande payée avant la facturation automatique : émet sa facture. */
+export const generateOrderInvoice = mutation({
+  args: { orderId: v.id("btOrders") },
+  handler: async (ctx, { orderId }) => {
+    await requireCrmPermission(ctx, PAGE_DEMANDES, "update");
+    const actor = await requireUser(ctx);
+    const order = await ctx.db.get(orderId);
+    if (!order || order.status !== "payee") throw new ConvexError("La demande n’est pas payée.");
+    const id = await ensureOrderInvoice(ctx, orderId, actor.name ?? actor.email ?? actor.subject);
+    if (!id) throw new ConvexError("Facture impossible à générer.");
+    return id;
   },
 });

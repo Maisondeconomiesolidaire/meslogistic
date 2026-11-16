@@ -531,7 +531,13 @@ export default defineSchema(
     status: v.optional(v.union(v.literal("planifiee"), v.literal("en_route"), v.literal("terminee"))),
     departedAt: v.optional(v.number()),
     completedAt: v.optional(v.number()),
-  }),
+    /** Navette née d'une réservation de véhicule Mes Outils (onglet Navettes). */
+    vehicleReservationId: v.optional(v.id("vehicleReservations")),
+    /** Conducteur : la personne qui a pris les objets sur son trajet. */
+    driverName: v.optional(v.string()),
+    driverClerkId: v.optional(v.string()),
+    vehicleName: v.optional(v.string()),
+  }).index("by_vehicleReservationId", ["vehicleReservationId"]),
   mlRequests: defineTable({
     shuttleId: v.optional(v.id("mlShuttles")),
     receivedQuantity: v.optional(v.number()),
@@ -1570,6 +1576,23 @@ export default defineSchema(
     // Transport d'objets/matériel (déménagement, collecte volumineuse…).
     willTransport: v.optional(v.boolean()),
     transportDetails: v.optional(v.string()),
+    /**
+     * Destination du trajet (lieu ou adresse choisi via la recherche Mapbox).
+     * Le départ est toujours le Solidarium (4 rue de la Prairie, Lachapelle-aux-Pots)
+     * et le trajet est un aller-retour.
+     */
+    destination: v.optional(v.object({
+      label: v.string(),
+      address: v.optional(v.string()),
+      longitude: v.number(),
+      latitude: v.number(),
+    })),
+    /** Kilométrage aller-retour calculé (Solidarium → destination × 2), en km. */
+    routeKm: v.optional(v.number()),
+    /** L'utilisateur a confirmé (ou corrigé) le kilométrage, repris dans `expectedKm`. */
+    kmConfirmed: v.optional(v.boolean()),
+    /** Sites logistiques sur la route (clés Meslogistic : comptoir_c, esspace_150…). */
+    sitesOnRoute: v.optional(v.array(v.string())),
     start: v.number(),
     end: v.number(),
     status: v.union(
@@ -3380,6 +3403,65 @@ export default defineSchema(
   })
     .index("by_code", ["code"])
     .index("by_sourceOrderId", ["sourceOrderId"]),
+
+  /** Clients de facturation Bâtire (devis / factures), créés depuis le CRM. */
+  btBillingClients: defineTable({
+    company: v.optional(v.string()),
+    firstName: v.optional(v.string()),
+    lastName: v.optional(v.string()),
+    email: v.optional(v.string()),
+    phone: v.optional(v.string()),
+    address: v.optional(v.string()),
+    postalCode: v.optional(v.string()),
+    city: v.optional(v.string()),
+    siret: v.optional(v.string()),
+    vatNumber: v.optional(v.string()),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  }).index("by_email", ["email"]),
+
+  /**
+   * Devis et factures Bâtire. Émetteur : la Recyclerie pour le mobilier,
+   * MATERIOSOL pour le reste. Numérotation continue par émetteur, type et
+   * année ; le client est figé dans le document (copie au moment de l'émission).
+   */
+  btBillingDocs: defineTable({
+    type: v.union(v.literal("devis"), v.literal("facture")),
+    issuer: v.union(v.literal("recyclerie"), v.literal("materiosol")),
+    number: v.string(),
+    year: v.number(),
+    seq: v.number(),
+    status: v.union(v.literal("en_attente"), v.literal("accepte"), v.literal("refuse"), v.literal("annule"), v.literal("a_regler"), v.literal("payee")),
+    clientId: v.optional(v.id("btBillingClients")),
+    client: v.object({
+      company: v.optional(v.string()), firstName: v.optional(v.string()), lastName: v.optional(v.string()),
+      email: v.optional(v.string()), phone: v.optional(v.string()), address: v.optional(v.string()),
+      postalCode: v.optional(v.string()), city: v.optional(v.string()), siret: v.optional(v.string()), vatNumber: v.optional(v.string()),
+    }),
+    /** Prix TTC en centimes. */
+    lines: v.array(v.object({ materialId: v.optional(v.id("btMaterials")), label: v.string(), quantity: v.number(), unit: v.optional(v.string()), unitPriceCents: v.number() })),
+    vatRate: v.number(),
+    totalCents: v.number(),
+    issueDate: v.string(),
+    validUntil: v.optional(v.string()),
+    dueDate: v.optional(v.string()),
+    notes: v.optional(v.string()),
+    sourceQuoteId: v.optional(v.id("btBillingDocs")),
+    invoiceId: v.optional(v.id("btBillingDocs")),
+    /** Demande Bâtire d'origine (onglet Facturation de la popup). */
+    orderId: v.optional(v.id("btOrders")),
+    /** Dernier envoi du PDF au client par email. */
+    sentAt: v.optional(v.number()),
+    sentTo: v.optional(v.string()),
+    paidAt: v.optional(v.number()),
+    paymentMethod: v.optional(v.string()),
+    statusAt: v.optional(v.number()),
+    createdBy: v.optional(v.string()),
+    createdAt: v.number(),
+  })
+    .index("by_type", ["type"])
+    .index("by_orderId", ["orderId"])
+    .index("by_issuer_type_year_seq", ["issuer", "type", "year", "seq"]),
 
   /** Emplacements de stockage Bâtire (« allée B3 »…), rattachés à un lieu. */
   btStorageSlots: defineTable({
