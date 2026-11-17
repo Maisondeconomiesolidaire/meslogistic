@@ -105,6 +105,8 @@ function colorShuttles(items: Array<{ id: string; places: string[] }>) {
   return colors;
 }
 
+type ShuttleChoice = { id: string; name: string; color: string; status: string };
+
 /** Propriétés d'un objet cliqué sur la carte (le typage Mapbox ne les expose pas). */
 const featureProps = (feature: unknown) => ((feature as { properties?: Record<string, unknown> } | undefined)?.properties ?? {});
 
@@ -208,6 +210,9 @@ export function LogisticsMap({ requests, selected, place, onPlace, isDark, shutt
   }, [overviewKey]);
   // Niveau de détail selon le zoom : vue d'ensemble compacte, détails en zoomant.
   const [detailed, setDetailed] = useState(false);
+  // Plusieurs navettes au même endroit : liste pour choisir laquelle ouvrir.
+  const [chooser, setChooser] = useState<{ x: number; y: number; items: ShuttleChoice[] } | null>(null);
+  useEffect(() => { if (navMode) setChooser(null); }, [navMode]);
   const onOpenShuttleRef = useRef(onOpenShuttle);
   onOpenShuttleRef.current = onOpenShuttle;
 
@@ -240,15 +245,33 @@ export function LogisticsMap({ requests, selected, place, onPlace, isDark, shutt
       map.addLayer({ id: "selected", type: "line", source: "selected", layout: { "line-cap": "round", "line-join": "round" }, paint: { "line-color": ["get", "color"], "line-width": 7, "line-opacity": 0.95 } });
       setReady(version => version + 1);
     });
+    // Toutes les navettes sous le pointeur (des trajets peuvent emprunter la même route).
+    const shuttlesAt = (features: unknown[] | undefined) => {
+      const seen = new Map<string, ShuttleChoice>();
+      for (const feature of features ?? []) {
+        const { id, name, color, status } = featureProps(feature);
+        if (typeof id === "string" && !seen.has(id)) seen.set(id, { id, name: String(name ?? "Navette"), color: String(color ?? NAV_COLOR), status: String(status ?? "") });
+      }
+      return [...seen.values()];
+    };
     map.on("click", "shuttles-hit", event => {
-      const id = featureProps(event.features?.[0]).id;
-      if (typeof id === "string") onOpenShuttleRef.current?.(id);
+      const found = shuttlesAt(event.features);
+      if (found.length === 1) { setChooser(null); onOpenShuttleRef.current?.(found[0].id); return; }
+      if (found.length > 1) setChooser({ x: event.point.x, y: event.point.y, items: found });
     });
+    map.on("click", event => {
+      if (!map.queryRenderedFeatures(event.point, { layers: ["shuttles-hit"] }).length) setChooser(null);
+    });
+    map.on("movestart", () => setChooser(null));
     const popup = new mapboxgl.Popup({ closeButton: false, closeOnClick: false, offset: 10 });
     map.on("mouseenter", "shuttles-hit", () => { map.getCanvas().style.cursor = "pointer"; });
     map.on("mousemove", "shuttles-hit", event => {
-      const name = featureProps(event.features?.[0]).name;
-      if (typeof name === "string") popup.setLngLat(event.lngLat).setHTML(`<strong style="color:#09090b">${name.replace(/[<>&]/g, "")}</strong>`).addTo(map);
+      const found = shuttlesAt(event.features);
+      if (!found.length) return;
+      const escape = (text: string) => text.replace(/[<>&]/g, "");
+      popup.setLngLat(event.lngLat).setHTML(found.length === 1
+        ? `<strong style="color:#09090b">${escape(found[0].name)}</strong>`
+        : `<strong style="color:#09090b">${found.length} navettes ici</strong><br><span style="color:#52525b">Cliquez pour choisir</span>`).addTo(map);
     });
     map.on("mouseleave", "shuttles-hit", () => { map.getCanvas().style.cursor = ""; popup.remove(); });
     const observer = new ResizeObserver(() => map.resize());
@@ -391,6 +414,17 @@ export function LogisticsMap({ requests, selected, place, onPlace, isDark, shutt
   if (!TOKEN) return <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-sm text-zinc-500"><MapPinOff size={28} />Carte indisponible : VITE_MAPBOX_ACCESS_TOKEN manquant.</div>;
   return <div className="absolute inset-0">
     <div ref={container} className="h-full w-full" />
+    {chooser && !navMode && <div role="menu" aria-label="Navettes à cet endroit" className="absolute z-10 w-64 overflow-hidden rounded-2xl border border-[var(--crm-border)] bg-[var(--crm-surface)] text-sm text-zinc-100 shadow-2xl"
+      style={{ left: Math.max(8, chooser.x - 128), top: chooser.y + 14 }}>
+      <p className="border-b border-[var(--crm-border)] px-3 py-2 text-xs font-semibold text-zinc-400">{chooser.items.length} navettes passent ici · laquelle ouvrir ?</p>
+      <ul className="max-h-64 overflow-y-auto p-1">
+        {chooser.items.map(item => <li key={item.id}><button type="button" role="menuitem" onClick={() => { setChooser(null); onOpenShuttle?.(item.id); }} className="flex w-full items-center gap-2.5 rounded-xl px-2.5 py-2 text-left hover:bg-[var(--crm-surface-2)]">
+          <span className="h-1 w-6 shrink-0 rounded-full" style={{ backgroundColor: item.color }} />
+          <span className="min-w-0 flex-1 truncate font-semibold">{item.name}</span>
+          <span className="shrink-0 text-[11px] text-zinc-500">{item.status === "en_route" ? "En route" : "À venir"}</span>
+        </button></li>)}
+      </ul>
+    </div>}
     {navMode && shuttle && (shuttle.trip ? <TripPanel trip={shuttle.trip} /> : <NavPanel shuttle={shuttle} plan={plan} planning={planning} error={planError} />)}
     {!navMode && <div className="pointer-events-none absolute bottom-3 right-14 flex flex-wrap justify-end gap-2 text-[11px] font-semibold">
       {overviewLines.length > 0
