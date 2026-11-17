@@ -58,6 +58,45 @@ function road(from: LngLat, to: LngLat): Promise<LngLat[]> {
   return pending;
 }
 
+/** Lieux d'une navette : la destination d'un trajet Mes Outils a ses coordonnées exactes. */
+function shuttleLocator(shuttle: Shuttle) {
+  const exact = shuttle.trip?.destinationAt ?? null;
+  return (raw: string): Promise<LngLat | null> => exact && raw === shuttle.destination ? Promise.resolve(exact) : locate(raw);
+}
+
+const isoToday = () => { const now = new Date(); return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`; };
+
+/** Navettes affichées par défaut : en route, ou planifiées aujourd'hui ou plus tard. */
+export function currentShuttles(shuttles: Shuttle[]) {
+  const today = isoToday();
+  return shuttles.filter(shuttle => shuttle.status === "en_route" || (shuttle.status === "planifiee" && shuttle.scheduledDate >= today));
+}
+
+/**
+ * Tracé d'aperçu d'une navette (sans optimisation) : départ, lieux de ses
+ * objets dans l'ordre, arrivée ; un trajet Mes Outils revient à son départ.
+ */
+async function overviewLine(shuttle: Shuttle): Promise<LngLat[] | null> {
+  const rows = shuttle.transits.filter(row => shuttle.status === "en_route" ? row.status === "en_transit" : row.status === "a_preparer");
+  const raws = [shuttle.origin ?? rows[0]?.origin, ...rows.flatMap(row => [row.origin, row.destination]), shuttle.destination, shuttle.trip ? shuttle.origin : undefined]
+    .filter((raw): raw is string => Boolean(raw));
+  const names: string[] = [];
+  const ordered: string[] = [];
+  for (const raw of raws) {
+    const name = shortLocation(raw);
+    if (names[names.length - 1] === name) continue;
+    names.push(name); ordered.push(raw);
+  }
+  const locateOf = shuttleLocator(shuttle);
+  const points = (await Promise.all(ordered.map(raw => locateOf(raw)))).filter((point): point is LngLat => Boolean(point));
+  if (points.length < 2) return null;
+  const legs = await Promise.all(points.slice(1).map((point, index) => road(points[index], point)));
+  return legs.flat();
+}
+
+/** Propriétés d'un objet cliqué sur la carte (le typage Mapbox ne les expose pas). */
+const featureProps = (feature: unknown) => ((feature as { properties?: Record<string, unknown> } | undefined)?.properties ?? {});
+
 type LineFeature = { type: "Feature"; properties: Record<string, unknown>; geometry: { type: "LineString"; coordinates: LngLat[] } };
 const emptyCollection = { type: "FeatureCollection" as const, features: [] as LineFeature[] };
 const lineFeature = (coordinates: LngLat[], properties: Record<string, unknown>): LineFeature => ({ type: "Feature", properties, geometry: { type: "LineString", coordinates } });
@@ -67,12 +106,16 @@ const lineFeature = (coordinates: LngLat[], properties: Record<string, unknown>)
  * départ) et le tracé routier de chaque liaison. Orange : objets en transit ;
  * bleu : objets à planifier. La demande sélectionnée est surlignée en violet.
  */
-export function LogisticsMap({ requests, selected, place, onPlace, isDark, shuttle, onPlan }: {
+export function LogisticsMap({ requests, selected, place, onPlace, isDark, shuttle, onPlan, shuttles = [], onOpenShuttle }: {
   requests: Request[]; selected?: Request | null; place: string | null; onPlace: (place: string | null) => void; isDark: boolean;
   /** Navette ouverte : la carte passe en mode navigation. */
   shuttle?: Shuttle | null;
   /** Reçoit l'itinéraire calculé de la navette ouverte (pour l'impression). */
   onPlan?: (plan: NavPlan | null) => void;
+  /** Toutes les navettes : celles en cours / à venir sont tracées par défaut. */
+  shuttles?: Shuttle[];
+  /** Clic sur le tracé d'une navette : l'ouvrir. */
+  onOpenShuttle?: (id: string) => void;
 }) {
   const container = useRef<HTMLDivElement>(null);
   const mapRef = useRef<mapboxgl.Map | null>(null);
@@ -118,7 +161,7 @@ export function LogisticsMap({ requests, selected, place, onPlace, isDark, shutt
     if (!current) return;
     let cancelled = false;
     setPlanning(true);
-    planShuttle(current, locate)
+    planShuttle(current, shuttleLocator(current))
       .then(result => { if (!cancelled) setPlan(result); })
       .catch((caught: unknown) => { if (!cancelled) setPlanError(caught instanceof Error ? caught.message : "Itinéraire indisponible."); })
       .finally(() => { if (!cancelled) setPlanning(false); });
@@ -128,6 +171,22 @@ export function LogisticsMap({ requests, selected, place, onPlace, isDark, shutt
   onPlanRef.current = onPlan;
   useEffect(() => { onPlanRef.current?.(plan); }, [plan]);
   const navMode = Boolean(shuttle);
+
+  // Aperçu : tracé de chaque navette en cours ou à venir.
+  const overview = useMemo(() => currentShuttles(shuttles), [shuttles]);
+  const overviewKey = overview.map(routeKey).join("§");
+  const overviewRef = useRef(overview);
+  overviewRef.current = overview;
+  const [overviewLines, setOverviewLines] = useState<Array<{ id: string; name: string; status: string; line: LngLat[] }>>([]);
+  useEffect(() => {
+    let cancelled = false;
+    const current = overviewRef.current;
+    void Promise.all(current.map(async item => ({ id: item._id as string, name: item.name, status: item.status, line: await overviewLine(item).catch(() => null) })))
+      .then(results => { if (!cancelled) setOverviewLines(results.flatMap(result => result.line ? [{ id: result.id, name: result.name, status: String(result.status), line: result.line }] : [])); });
+    return () => { cancelled = true; };
+  }, [overviewKey]);
+  const onOpenShuttleRef = useRef(onOpenShuttle);
+  onOpenShuttleRef.current = onOpenShuttle;
 
   // Création de la carte, une seule fois.
   useEffect(() => {
@@ -144,10 +203,26 @@ export function LogisticsMap({ requests, selected, place, onPlace, isDark, shutt
       map.addSource("nav", { type: "geojson", data: emptyCollection });
       map.addLayer({ id: "nav-casing", type: "line", source: "nav", layout: { "line-cap": "round", "line-join": "round" }, paint: { "line-color": "#ffffff", "line-width": 10, "line-opacity": 0.9 } });
       map.addLayer({ id: "nav", type: "line", source: "nav", layout: { "line-cap": "round", "line-join": "round" }, paint: { "line-color": ["get", "color"], "line-width": 6 } });
+      map.addSource("shuttles", { type: "geojson", data: emptyCollection });
+      map.addLayer({ id: "shuttles-casing", type: "line", source: "shuttles", layout: { "line-cap": "round", "line-join": "round" }, paint: { "line-color": "#ffffff", "line-width": 7, "line-opacity": 0.7 } });
+      map.addLayer({ id: "shuttles", type: "line", source: "shuttles", layout: { "line-cap": "round", "line-join": "round" }, paint: { "line-color": ["get", "color"], "line-width": 4, "line-opacity": 0.9 } });
+      // Zone de clic plus large que le trait.
+      map.addLayer({ id: "shuttles-hit", type: "line", source: "shuttles", paint: { "line-color": "#000000", "line-width": 18, "line-opacity": 0 } });
       map.addSource("selected", { type: "geojson", data: emptyCollection });
       map.addLayer({ id: "selected", type: "line", source: "selected", layout: { "line-cap": "round", "line-join": "round" }, paint: { "line-color": ["get", "color"], "line-width": 7, "line-opacity": 0.95 } });
       setReady(version => version + 1);
     });
+    map.on("click", "shuttles-hit", event => {
+      const id = featureProps(event.features?.[0]).id;
+      if (typeof id === "string") onOpenShuttleRef.current?.(id);
+    });
+    const popup = new mapboxgl.Popup({ closeButton: false, closeOnClick: false, offset: 10 });
+    map.on("mouseenter", "shuttles-hit", () => { map.getCanvas().style.cursor = "pointer"; });
+    map.on("mousemove", "shuttles-hit", event => {
+      const name = featureProps(event.features?.[0]).name;
+      if (typeof name === "string") popup.setLngLat(event.lngLat).setHTML(`<strong style="color:#09090b">${name.replace(/[<>&]/g, "")}</strong>`).addTo(map);
+    });
+    map.on("mouseleave", "shuttles-hit", () => { map.getCanvas().style.cursor = ""; popup.remove(); });
     const observer = new ResizeObserver(() => map.resize());
     observer.observe(container.current);
     mapRef.current = map;
@@ -187,8 +262,18 @@ export function LogisticsMap({ requests, selected, place, onPlace, isDark, shutt
       const line = roads[key] ?? (coords[link.from] && coords[link.to] ? [coords[link.from], coords[link.to]] : null);
       return line ? [lineFeature(line, { color: link.transit ? palette.transit : palette.onSite, width: 2 + Math.min(link.count, 6), opacity: palette.lineOpacity })] : [];
     });
-    source.setData(navMode ? emptyCollection : { type: "FeatureCollection", features });
-  }, [ready, links, roads, coords, navMode, palette]);
+    // Par défaut, la carte montre les trajets des navettes ; sans navette en cours, les liaisons des demandes.
+    source.setData(navMode || overviewLines.length > 0 ? emptyCollection : { type: "FeatureCollection", features });
+  }, [ready, links, roads, coords, navMode, palette, overviewLines]);
+
+  useEffect(() => {
+    const source = ready ? mapRef.current?.getSource("shuttles") as mapboxgl.GeoJSONSource | undefined : undefined;
+    if (!source) return;
+    source.setData(navMode ? emptyCollection : {
+      type: "FeatureCollection",
+      features: overviewLines.map(item => lineFeature(item.line, { id: item.id, name: item.name, color: item.status === "en_route" ? palette.transit : palette.nav })),
+    });
+  }, [ready, overviewLines, navMode, palette]);
 
   // Tracé de navigation et cadrage sur la tournée.
   useEffect(() => {
@@ -278,7 +363,7 @@ export function LogisticsMap({ requests, selected, place, onPlace, isDark, shutt
     <div ref={container} className="h-full w-full" />
     {navMode && shuttle && (shuttle.trip ? <TripPanel trip={shuttle.trip} /> : <NavPanel shuttle={shuttle} plan={plan} planning={planning} error={planError} />)}
     {!navMode && <div className="pointer-events-none absolute right-2 top-2 flex flex-wrap justify-end gap-2 text-[11px] font-semibold">
-      {[[palette.onSite, "À expédier"], [palette.transit, "En transit"], [palette.selected, "Sélection"]].map(([color, label]) => <span key={label} className="flex items-center gap-1.5 rounded-full bg-black/70 px-2.5 py-1 text-white"><span className="h-2 w-4 rounded-full" style={{ backgroundColor: color }} />{label}</span>)}
+      {(overviewLines.length > 0 ? [[palette.nav, "Navette à venir"], [palette.transit, "Navette en route"], [palette.selected, "Sélection"]] : [[palette.onSite, "À expédier"], [palette.transit, "En transit"], [palette.selected, "Sélection"]]).map(([color, label]) => <span key={label} className="flex items-center gap-1.5 rounded-full bg-black/70 px-2.5 py-1 text-white"><span className="h-2 w-4 rounded-full" style={{ backgroundColor: color }} />{label}</span>)}
     </div>}
   </div>;
 }

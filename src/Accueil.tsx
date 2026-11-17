@@ -79,7 +79,7 @@ export function Accueil({ canCreate, canUpdate, isDark }: { canCreate: boolean; 
     {/* Carte + navettes */}
     <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-3">
       <section aria-label="Carte des demandes" className="relative min-h-[320px] flex-[3] overflow-hidden rounded-3xl border border-[var(--crm-border)] bg-[var(--crm-surface)]">
-        <LogisticsMap requests={active} selected={selected} place={place} onPlace={onPlace} isDark={isDark} shuttle={board.shuttles.find(shuttle => shuttle._id === openShuttleId) ?? null} onPlan={setNavPlan} />
+        <LogisticsMap requests={active} selected={selected} place={place} onPlace={onPlace} isDark={isDark} shuttle={board.shuttles.find(shuttle => shuttle._id === openShuttleId) ?? null} onPlan={setNavPlan} shuttles={board.shuttles} onOpenShuttle={id => setOpenShuttleId(id)} />
       </section>
       <ShuttleSection shuttles={board.shuttles} openId={openShuttleId} setOpenId={setOpenShuttleId} dragging={dragging} canCreate={canCreate} canUpdate={canUpdate} onSelectRequest={id => setSelectedId(id)} selectedId={selectedId} navPlan={navPlan} candidates={active.filter(request => request.status === "a_preparer" && !request.shuttleId)} />
     </div>
