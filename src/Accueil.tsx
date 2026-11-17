@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, type DragEvent, type ReactNode } from "react";
 import { useMutation, useQuery } from "convex/react";
-import { AlertTriangle, ArrowLeft, ArrowRight, Bus, CalendarClock, CarFront, Check, ChevronLeft, ChevronRight, ClipboardCheck, ExternalLink, GripVertical, MapPin, PackageCheck, Plus, Printer, Search, Trash2, Truck, Undo2, X } from "lucide-react";
+import { AlertTriangle, ArrowLeft, ArrowRight, Bus, CalendarClock, CalendarDays, CarFront, Check, ChevronLeft, ChevronRight, ClipboardCheck, ExternalLink, GripVertical, MapPin, PackageCheck, Map as MapIcon, Plus, Printer, Search, Trash2, Truck, Undo2, X } from "lucide-react";
 import { api } from "../convex/_generated/api";
 import type { Id } from "../convex/_generated/dataModel";
 import { Thumb, TRANSIT_COLOR, shortDate } from "./components/crm/LogisticsCard";
@@ -39,6 +39,7 @@ export function Accueil({ canCreate, canUpdate, isDark }: { canCreate: boolean; 
   const [fullSheet, setFullSheet] = useState(false);
   const [openShuttleId, setOpenShuttleId] = useState<string | null>(null);
   const [navPlan, setNavPlan] = useState<NavPlan | null>(null);
+  const [tab, setTab] = useState<"carte" | "calendrier">("carte");
   const onPlace = useCallback((next: string | null) => setPlace(next), []);
 
   const active = useMemo(() => (requests ?? [])
@@ -57,9 +58,33 @@ export function Accueil({ canCreate, canUpdate, isDark }: { canCreate: boolean; 
   const selected = requests.find(request => request._id === selectedId) ?? null;
   const shuttleName = (id?: string) => board.shuttles.find(shuttle => shuttle._id === id)?.name;
 
-  return <div className="flex h-[calc(100dvh-3.5rem)] flex-col gap-3 overflow-y-auto p-3 lg:h-dvh lg:flex-row lg:overflow-hidden">
-    {/* Demandes */}
-    <aside className="flex min-h-[420px] w-full shrink-0 flex-col overflow-hidden rounded-3xl border border-[var(--crm-border)] bg-[var(--crm-surface)] lg:min-h-0 lg:w-[340px]">
+  const openShuttle = board.shuttles.find(shuttle => shuttle._id === openShuttleId) ?? null;
+  const candidates = active.filter(request => request.status === "a_preparer" && !request.shuttleId);
+  // Deuxième carte flottante : la demande choisie, sinon la navette ouverte (carte seulement).
+  const second: "request" | "shuttle" | null = selected ? "request" : openShuttle && tab === "carte" ? "shuttle" : null;
+  const secondWidth = second === "request" ? 380 : second === "shuttle" ? 460 : 0;
+  const leftInset = 352 + (second ? secondWidth + 12 : 0);
+  const openFromCalendar = (id: string | null) => { setOpenShuttleId(id); if (id) { setSelectedId(null); setTab("carte"); } };
+  const card = "overflow-hidden rounded-3xl border border-[var(--crm-border)] bg-[var(--crm-surface)] shadow-2xl";
+
+  return <div className="relative flex h-[calc(100dvh-3.5rem)] flex-col gap-3 overflow-y-auto p-3 lg:block lg:h-dvh lg:overflow-hidden lg:p-0">
+    {/* Onglets : la carte ou le calendrier */}
+    <div role="tablist" aria-label="Affichage" className={`z-20 flex w-fit self-end rounded-full border border-[var(--crm-border)] bg-[var(--crm-surface)] p-1 text-sm font-semibold shadow-xl lg:absolute lg:right-3 lg:top-3`}>
+      {([["carte", "Carte", MapIcon], ["calendrier", "Calendrier", CalendarDays]] as const).map(([key, label, Icon]) => <button key={key} type="button" role="tab" aria-selected={tab === key} onClick={() => setTab(key)}
+        className={`flex items-center gap-1.5 rounded-full px-4 py-1.5 transition-colors ${tab === key ? "bg-brand-500 text-white" : "text-zinc-400 hover:text-zinc-100"}`}><Icon size={15} />{label}</button>)}
+    </div>
+
+    {/* Fond : la carte en plein écran, ou le calendrier des navettes */}
+    {tab === "carte" ? <section aria-label="Carte des navettes" className="relative min-h-[55vh] shrink-0 overflow-hidden rounded-3xl border border-[var(--crm-border)] bg-[var(--crm-surface)] lg:absolute lg:inset-0 lg:min-h-0 lg:rounded-none lg:border-0">
+      <LogisticsMap requests={active} selected={selected} place={place} onPlace={onPlace} isDark={isDark} shuttle={openShuttle} onPlan={setNavPlan} shuttles={board.shuttles} onOpenShuttle={id => { setSelectedId(null); setOpenShuttleId(id); }} leftInset={leftInset} />
+    </section> : <div className="flex min-h-[520px] flex-col lg:absolute lg:bottom-3 lg:right-3 lg:top-16 lg:min-h-0" style={{ left: leftInset }}>
+      <div className="flex min-h-0 flex-1 flex-col">
+        <ShuttleSection shuttles={board.shuttles} openId={null} setOpenId={openFromCalendar} dragging={dragging} canCreate={canCreate} canUpdate={canUpdate} onSelectRequest={id => setSelectedId(id)} selectedId={selectedId} navPlan={navPlan} candidates={candidates} />
+      </div>
+    </div>}
+
+    {/* Carte 1 : les demandes */}
+    <aside className={`z-10 flex min-h-[420px] w-full shrink-0 flex-col lg:absolute lg:bottom-3 lg:left-3 lg:top-3 lg:min-h-0 lg:w-[340px] ${card}`}>
       <div className="shrink-0 space-y-3 border-b border-[var(--crm-border)] p-4">
         <div className="flex items-baseline justify-between gap-2"><h1 className="text-lg font-bold">Demandes</h1><span className="text-xs text-zinc-500">{objets(visible.length)} · échéance la plus proche d’abord</span></div>
         <label className="flex items-center gap-2 rounded-xl bg-[var(--crm-surface-2)] px-3 py-2 text-sm"><Search size={15} className="shrink-0 text-zinc-500" /><input value={search} onChange={event => setSearch(event.target.value)} placeholder="Objet, référence, client…" className="min-w-0 flex-1 bg-transparent outline-none placeholder:text-zinc-500" /></label>
@@ -76,18 +101,38 @@ export function Accueil({ canCreate, canUpdate, isDark }: { canCreate: boolean; 
       </ul>
     </aside>
 
-    {/* Carte + navettes */}
-    <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-3">
-      <section aria-label="Carte des demandes" className="relative min-h-[320px] flex-[3] overflow-hidden rounded-3xl border border-[var(--crm-border)] bg-[var(--crm-surface)]">
-        <LogisticsMap requests={active} selected={selected} place={place} onPlace={onPlace} isDark={isDark} shuttle={board.shuttles.find(shuttle => shuttle._id === openShuttleId) ?? null} onPlan={setNavPlan} shuttles={board.shuttles} onOpenShuttle={id => setOpenShuttleId(id)} />
-      </section>
-      <ShuttleSection shuttles={board.shuttles} openId={openShuttleId} setOpenId={setOpenShuttleId} dragging={dragging} canCreate={canCreate} canUpdate={canUpdate} onSelectRequest={id => setSelectedId(id)} selectedId={selectedId} navPlan={navPlan} candidates={active.filter(request => request.status === "a_preparer" && !request.shuttleId)} />
-    </div>
-
-    {/* Fiche de la demande */}
-    {selected && <RequestPanel request={selected} shuttleName={shuttleName(selected.shuttleId)} onClose={() => setSelectedId(null)} onOpenFull={() => setFullSheet(true)} />}
+    {/* Carte 2 : la fiche de la demande, ou le contenu de la navette ouverte */}
+    {second === "request" && selected && <div className="z-10 flex lg:absolute lg:bottom-3 lg:left-[364px] lg:top-3 lg:w-[380px] [&>aside]:shadow-2xl">
+      <RequestPanel request={selected} shuttleName={shuttleName(selected.shuttleId)} onClose={() => setSelectedId(null)} onOpenFull={() => setFullSheet(true)} />
+    </div>}
+    {second === "shuttle" && openShuttle && <ShuttleCard key={openShuttle._id} shuttle={openShuttle} className={`z-10 flex min-h-[420px] flex-col lg:absolute lg:bottom-3 lg:left-[364px] lg:top-3 lg:min-h-0 lg:w-[460px] ${card}`}
+      canUpdate={canUpdate} dragging={dragging} onClose={() => setOpenShuttleId(null)} onSelectRequest={id => setSelectedId(id)} selectedId={selectedId} navPlan={navPlan} candidates={candidates} />}
     {selected && fullSheet && <RequestDetail request={selected} canUpdate={canUpdate} onClose={() => setFullSheet(false)} />}
   </div>;
+}
+
+/** Deuxième carte : le contenu d'une navette ; on y glisse les demandes de la première carte. */
+function ShuttleCard({ shuttle, className, canUpdate, dragging, onClose, onSelectRequest, selectedId, navPlan, candidates }: {
+  shuttle: Shuttle; className: string; canUpdate: boolean; dragging: string | null; onClose: () => void; onSelectRequest: (id: string) => void; selectedId: string | null; navPlan: NavPlan | null; candidates: Request[];
+}) {
+  const addRequests = useMutation(api.meslogisticShuttles.addRequests);
+  const [error, setError] = useState("");
+  const [over, setOver] = useState(false);
+  const dropProps = shuttle.status === "planifiee" && canUpdate ? {
+    onDragOver: (event: DragEvent) => { if (!event.dataTransfer.types.includes(DRAG_TYPE)) return; event.preventDefault(); event.dataTransfer.dropEffect = "move"; setOver(true); },
+    onDragLeave: () => setOver(false),
+    onDrop: async (event: DragEvent) => {
+      event.preventDefault(); setOver(false);
+      const requestId = event.dataTransfer.getData(DRAG_TYPE);
+      if (!requestId) return;
+      setError("");
+      try { await addRequests({ shuttleId: shuttle._id, requestIds: [requestId as Id<"mlRequests">] }); } catch (caught) { setError(errorText(caught)); }
+    },
+  } : {};
+  return <section aria-label={`Navette ${shuttle.name}`} className={className}>
+    {error && <p role="alert" className="flex shrink-0 items-center justify-between gap-2 bg-red-500/10 px-4 py-2 text-sm text-red-500">{error}<button type="button" onClick={() => setError("")} aria-label="Fermer"><X size={14} /></button></p>}
+    <ShuttleInline shuttle={shuttle} canUpdate={canUpdate} dragging={dragging} dropActive={over} dropProps={dropProps} onBack={onClose} onSelectRequest={onSelectRequest} selectedId={selectedId} onError={setError} navPlan={navPlan} candidates={candidates} />
+  </section>;
 }
 
 function RequestRow({ request: r, shuttleName, selected, draggable, onClick, onDragStart, onDragEnd }: {
@@ -292,7 +337,7 @@ function ShuttleInline({ shuttle, canUpdate, dragging, dropActive, dropProps, on
 
   return <div {...dropProps} className={`flex min-h-0 flex-1 flex-col transition-colors ${dropActive ? "bg-brand-500/10" : ""}`}>
     <div className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2 border-b border-[var(--crm-border)] px-4 py-3">
-      <button type="button" onClick={onBack} className="flex items-center gap-1.5 rounded-lg px-2 py-1 text-sm font-semibold text-zinc-400 hover:bg-[var(--crm-surface-2)] hover:text-zinc-100"><ArrowLeft size={16} />Navettes</button>
+      <button type="button" onClick={onBack} className="flex items-center gap-1.5 rounded-lg px-2 py-1 text-sm font-semibold text-zinc-400 hover:bg-[var(--crm-surface-2)] hover:text-zinc-100"><X size={16} />Fermer</button>
       <div className="min-w-0">
         <p className="flex items-center gap-2 text-lg font-bold"><Bus size={18} />{shuttle.name}<span className="rounded-full px-2.5 py-0.5 text-xs font-semibold text-zinc-950" style={{ backgroundColor: STATUS[shuttle.status].color }}>{SHUTTLE_LABEL[shuttle.status]}</span></p>
         <p className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-zinc-400"><span className="flex items-center gap-1 capitalize"><CalendarClock size={13} />{longDate(shuttle.scheduledDate)}</span>{shuttle.origin && <span className="flex items-center gap-1"><MapPin size={13} />{shortLocation(shuttle.origin)}{shuttle.destination ? <><ArrowRight size={12} />{shortLocation(shuttle.destination)}</> : null}</span>}<Stops stops={stopsOf(shuttle.transits)} className="font-semibold text-zinc-300" /></p>
@@ -313,7 +358,7 @@ function ShuttleInline({ shuttle, canUpdate, dragging, dropActive, dropProps, on
       {planned && <OnRoute shuttle={shuttle} candidates={candidates} canUpdate={canUpdate} onSelectRequest={onSelectRequest} onError={onError} />}
       {planned && canUpdate && <div className={`mb-3 flex items-center justify-center gap-2 rounded-2xl border-2 border-dashed p-4 text-sm font-semibold transition-colors ${dropActive ? "border-brand-500 bg-brand-500/15 text-brand-500" : dragging ? "border-brand-500/60 text-brand-500" : "border-[var(--crm-border)] text-zinc-500"}`}><GripVertical size={16} />Glissez ici des demandes de la liste de gauche</div>}
       {total === 0 ? <p className="p-3 text-sm text-zinc-500">Aucun objet dans cette navette.</p> :
-        <ul className="grid gap-2 sm:grid-cols-2 2xl:grid-cols-3">{shuttle.transits.map(row => {
+        <ul className="grid gap-2">{shuttle.transits.map(row => {
           const late = planned && row.dueDate && row.dueDate < shuttle.scheduledDate;
           return <li key={row._id} className={`flex items-center gap-3 rounded-2xl border p-2.5 text-sm ${row._id === selectedId ? "border-transparent ring-2" : "border-[var(--crm-border)]"}`} style={row._id === selectedId ? { ["--tw-ring-color" as string]: SELECTED_COLOR } : undefined}>
             <button type="button" onClick={() => onSelectRequest(row._id)} className="flex min-w-0 flex-1 items-center gap-3 text-left">

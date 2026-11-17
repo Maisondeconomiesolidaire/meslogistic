@@ -76,7 +76,7 @@ export function currentShuttles(shuttles: Shuttle[]) {
  * Tracé d'aperçu d'une navette (sans optimisation) : départ, lieux de ses
  * objets dans l'ordre, arrivée ; un trajet Mes Outils revient à son départ.
  */
-async function overviewLine(shuttle: Shuttle): Promise<LngLat[] | null> {
+async function overviewLine(shuttle: Shuttle): Promise<{ line: LngLat[]; places: string[] } | null> {
   const rows = shuttle.transits.filter(row => shuttle.status === "en_route" ? row.status === "en_transit" : row.status === "a_preparer");
   const raws = [shuttle.origin ?? rows[0]?.origin, ...rows.flatMap(row => [row.origin, row.destination]), shuttle.destination, shuttle.trip ? shuttle.origin : undefined]
     .filter((raw): raw is string => Boolean(raw));
@@ -91,7 +91,18 @@ async function overviewLine(shuttle: Shuttle): Promise<LngLat[] | null> {
   const points = (await Promise.all(ordered.map(raw => locateOf(raw)))).filter((point): point is LngLat => Boolean(point));
   if (points.length < 2) return null;
   const legs = await Promise.all(points.slice(1).map((point, index) => road(points[index], point)));
-  return legs.flat();
+  return { line: legs.flat(), places: names };
+}
+
+/** Une couleur par navette ; deux navettes qui partagent un lieu n'ont jamais la même. */
+const SHUTTLE_COLORS = ["#2563eb", "#16a34a", "#db2777", "#ea580c", "#0891b2", "#ca8a04", "#7c3aed", "#dc2626", "#0d9488", "#4f46e5"];
+function colorShuttles(items: Array<{ id: string; places: string[] }>) {
+  const colors = new Map<string, string>();
+  for (const item of items) {
+    const taken = new Set(items.filter(other => other.id !== item.id && colors.has(other.id) && other.places.some(place => item.places.includes(place))).map(other => colors.get(other.id)));
+    colors.set(item.id, SHUTTLE_COLORS.find(color => !taken.has(color)) ?? SHUTTLE_COLORS[colors.size % SHUTTLE_COLORS.length]);
+  }
+  return colors;
 }
 
 /** Propriétés d'un objet cliqué sur la carte (le typage Mapbox ne les expose pas). */
@@ -106,7 +117,7 @@ const lineFeature = (coordinates: LngLat[], properties: Record<string, unknown>)
  * départ) et le tracé routier de chaque liaison. Orange : objets en transit ;
  * bleu : objets à planifier. La demande sélectionnée est surlignée en violet.
  */
-export function LogisticsMap({ requests, selected, place, onPlace, isDark, shuttle, onPlan, shuttles = [], onOpenShuttle }: {
+export function LogisticsMap({ requests, selected, place, onPlace, isDark, shuttle, onPlan, shuttles = [], onOpenShuttle, leftInset = 0 }: {
   requests: Request[]; selected?: Request | null; place: string | null; onPlace: (place: string | null) => void; isDark: boolean;
   /** Navette ouverte : la carte passe en mode navigation. */
   shuttle?: Shuttle | null;
@@ -116,7 +127,12 @@ export function LogisticsMap({ requests, selected, place, onPlace, isDark, shutt
   shuttles?: Shuttle[];
   /** Clic sur le tracé d'une navette : l'ouvrir. */
   onOpenShuttle?: (id: string) => void;
+  /** Largeur (px) des cartes flottantes à gauche : le cadrage les évite. */
+  leftInset?: number;
 }) {
+  const insetRef = useRef(leftInset);
+  insetRef.current = leftInset;
+  const pad = (base: number) => ({ top: base, bottom: base, right: base, left: base + insetRef.current });
   const container = useRef<HTMLDivElement>(null);
   const mapRef = useRef<mapboxgl.Map | null>(null);
   const markers = useRef<mapboxgl.Marker[]>([]);
@@ -177,14 +193,21 @@ export function LogisticsMap({ requests, selected, place, onPlace, isDark, shutt
   const overviewKey = overview.map(routeKey).join("§");
   const overviewRef = useRef(overview);
   overviewRef.current = overview;
-  const [overviewLines, setOverviewLines] = useState<Array<{ id: string; name: string; status: string; line: LngLat[] }>>([]);
+  const [overviewLines, setOverviewLines] = useState<Array<{ id: string; name: string; status: string; line: LngLat[]; color: string }>>([]);
   useEffect(() => {
     let cancelled = false;
     const current = overviewRef.current;
-    void Promise.all(current.map(async item => ({ id: item._id as string, name: item.name, status: item.status, line: await overviewLine(item).catch(() => null) })))
-      .then(results => { if (!cancelled) setOverviewLines(results.flatMap(result => result.line ? [{ id: result.id, name: result.name, status: String(result.status), line: result.line }] : [])); });
+    void Promise.all(current.map(async item => ({ id: item._id as string, name: item.name, status: String(item.status), route: await overviewLine(item).catch(() => null) })))
+      .then(results => {
+        if (cancelled) return;
+        const drawn = results.flatMap(result => result.route ? [{ ...result, route: result.route }] : []);
+        const colors = colorShuttles(drawn.map(item => ({ id: item.id, places: item.route.places })));
+        setOverviewLines(drawn.map(item => ({ id: item.id, name: item.name, status: item.status, line: item.route.line, color: colors.get(item.id)! })));
+      });
     return () => { cancelled = true; };
   }, [overviewKey]);
+  // Niveau de détail selon le zoom : vue d'ensemble compacte, détails en zoomant.
+  const [detailed, setDetailed] = useState(false);
   const onOpenShuttleRef = useRef(onOpenShuttle);
   onOpenShuttleRef.current = onOpenShuttle;
 
@@ -193,7 +216,10 @@ export function LogisticsMap({ requests, selected, place, onPlace, isDark, shutt
     if (!TOKEN || !container.current) return;
     mapboxgl.accessToken = TOKEN;
     const map = new mapboxgl.Map({ container: container.current, style: appliedStyle.current, center: [1.92, 49.45], zoom: 9.4, attributionControl: false });
-    map.addControl(new mapboxgl.NavigationControl({ showCompass: false }), "top-left");
+    map.addControl(new mapboxgl.NavigationControl({ showCompass: false }), "bottom-right");
+    const syncZoom = () => setDetailed(map.getZoom() >= 10.2);
+    map.on("zoomend", syncZoom);
+    syncZoom();
     map.addControl(new mapboxgl.AttributionControl({ compact: true }), "bottom-right");
     // « style.load » : au premier chargement puis à chaque changement de thème.
     map.on("style.load", () => {
@@ -205,7 +231,9 @@ export function LogisticsMap({ requests, selected, place, onPlace, isDark, shutt
       map.addLayer({ id: "nav", type: "line", source: "nav", layout: { "line-cap": "round", "line-join": "round" }, paint: { "line-color": ["get", "color"], "line-width": 6 } });
       map.addSource("shuttles", { type: "geojson", data: emptyCollection });
       map.addLayer({ id: "shuttles-casing", type: "line", source: "shuttles", layout: { "line-cap": "round", "line-join": "round" }, paint: { "line-color": "#ffffff", "line-width": 7, "line-opacity": 0.7 } });
-      map.addLayer({ id: "shuttles", type: "line", source: "shuttles", layout: { "line-cap": "round", "line-join": "round" }, paint: { "line-color": ["get", "color"], "line-width": 4, "line-opacity": 0.9 } });
+      map.addLayer({ id: "shuttles", type: "line", source: "shuttles", filter: ["==", ["get", "status"], "en_route"], layout: { "line-cap": "round", "line-join": "round" }, paint: { "line-color": ["get", "color"], "line-width": ["interpolate", ["linear"], ["zoom"], 8, 3, 13, 6], "line-opacity": 0.95 } });
+      map.addLayer({ id: "shuttles-planned", type: "line", source: "shuttles", filter: ["!=", ["get", "status"], "en_route"], layout: { "line-join": "round" }, paint: { "line-color": ["get", "color"], "line-width": ["interpolate", ["linear"], ["zoom"], 8, 3, 13, 6], "line-opacity": 0.95, "line-dasharray": [1.6, 1.1] } });
+      map.addLayer({ id: "shuttles-label", type: "symbol", source: "shuttles", minzoom: 10.2, layout: { "symbol-placement": "line", "text-field": ["get", "name"], "text-size": 12, "text-font": ["DIN Pro Medium", "Arial Unicode MS Regular"], "symbol-spacing": 320 }, paint: { "text-color": ["get", "color"], "text-halo-color": "#ffffff", "text-halo-width": 2 } });
       // Zone de clic plus large que le trait.
       map.addLayer({ id: "shuttles-hit", type: "line", source: "shuttles", paint: { "line-color": "#000000", "line-width": 18, "line-opacity": 0 } });
       map.addSource("selected", { type: "geojson", data: emptyCollection });
@@ -271,9 +299,10 @@ export function LogisticsMap({ requests, selected, place, onPlace, isDark, shutt
     if (!source) return;
     source.setData(navMode ? emptyCollection : {
       type: "FeatureCollection",
-      features: overviewLines.map(item => lineFeature(item.line, { id: item.id, name: item.name, color: item.status === "en_route" ? palette.transit : palette.nav })),
+      features: overviewLines.map(item => lineFeature(item.line, { id: item.id, name: item.name, status: item.status, color: item.color })),
     });
   }, [ready, overviewLines, navMode, palette]);
+  const openColor = shuttle ? overviewLines.find(item => item.id === shuttle._id)?.color ?? palette.nav : palette.nav;
 
   // Tracé de navigation et cadrage sur la tournée.
   useEffect(() => {
@@ -281,11 +310,11 @@ export function LogisticsMap({ requests, selected, place, onPlace, isDark, shutt
     const source = ready ? map?.getSource("nav") as mapboxgl.GeoJSONSource | undefined : undefined;
     if (!map || !source) return;
     if (!navMode || !plan) { source.setData(emptyCollection); return; }
-    source.setData(plan.line.length > 1 ? { type: "FeatureCollection", features: [lineFeature(plan.line, { color: palette.nav })] } : emptyCollection);
+    source.setData(plan.line.length > 1 ? { type: "FeatureCollection", features: [lineFeature(plan.line, { color: openColor })] } : emptyCollection);
     const bounds = new mapboxgl.LngLatBounds();
     [...plan.line, ...plan.stops.map(stop => stop.at)].forEach(point => bounds.extend(point));
-    map.fitBounds(bounds, { padding: { top: 70, bottom: 50, left: 70, right: 380 }, maxZoom: 13, duration: 900 });
-  }, [ready, plan, navMode, palette]);
+    map.fitBounds(bounds, { padding: { ...pad(70), right: 360 }, maxZoom: 13, duration: 900 });
+  }, [ready, plan, navMode, palette, openColor]);
 
   // Repères des lieux.
   const selectedPlaces = selected ? [shortLocation(selected.origin), shortLocation(selected.destination)] : [];
@@ -300,10 +329,10 @@ export function LogisticsMap({ requests, selected, place, onPlace, isDark, shutt
         element.className = "flex flex-col items-center gap-1";
         const label = document.createElement("span");
         label.className = "flex items-center gap-1.5 whitespace-nowrap rounded-full bg-zinc-950/85 px-2 py-0.5 text-[11px] font-bold text-white shadow-lg";
-        label.textContent = `${stop.name} · ${time(stop.arrival)}`;
+        label.textContent = detailed ? `${stop.name} · ${time(stop.arrival)}` : stop.name;
         const badge = document.createElement("span");
         badge.className = "flex h-7 w-7 items-center justify-center rounded-full border-2 border-white text-xs font-bold text-white shadow-lg";
-        badge.style.backgroundColor = index === 0 ? "#059669" : palette.nav;
+        badge.style.backgroundColor = index === 0 ? "#059669" : openColor;
         badge.textContent = index === 0 ? "D" : String(index);
         element.append(label, badge);
         return new mapboxgl.Marker({ element, anchor: "bottom" }).setLngLat(stop.at).addTo(map);
@@ -322,8 +351,9 @@ export function LogisticsMap({ requests, selected, place, onPlace, isDark, shutt
       label.className = `flex items-center gap-1.5 whitespace-nowrap rounded-full px-2.5 py-1 text-xs font-bold text-zinc-950 shadow-lg ring-2 ${active ? "ring-white" : "ring-black/10"}`;
       label.style.backgroundColor = active ? palette.selected : info.waiting ? palette.onSite : info.transit ? palette.transit : palette.idle;
       label.style.color = active ? "#fff" : palette.labelText;
+      // Vue d'ensemble : nom seul ; en zoomant, le nombre d'objets qui attendent.
       label.textContent = name;
-      if (info.waiting) { const count = document.createElement("span"); count.className = "rounded-full bg-black/80 px-1.5 text-[11px] text-white"; count.textContent = String(info.waiting); label.append(count); }
+      if (info.waiting && detailed) { const count = document.createElement("span"); count.className = "rounded-full bg-black/80 px-1.5 text-[11px] text-white"; count.textContent = String(info.waiting); label.append(count); }
       const dot = document.createElement("span");
       dot.className = "h-3 w-3 rounded-full border-2 border-white shadow";
       dot.style.backgroundColor = active ? palette.selected : "#18181b";
@@ -334,10 +364,10 @@ export function LogisticsMap({ requests, selected, place, onPlace, isDark, shutt
     if (!fitted.current && markers.current.length > 1) {
       const bounds = new mapboxgl.LngLatBounds();
       markers.current.forEach(marker => bounds.extend(marker.getLngLat()));
-      map.fitBounds(bounds, { padding: 90, maxZoom: 11, duration: 0 });
+      map.fitBounds(bounds, { padding: pad(90), maxZoom: 11, duration: 0 });
       fitted.current = true;
     }
-  }, [ready, places, coords, place, selectedKey, onPlace, navMode, plan, palette]);
+  }, [ready, places, coords, place, selectedKey, onPlace, navMode, plan, palette, detailed, openColor]);
 
   // Demande sélectionnée : tracé en surbrillance et centrage.
   useEffect(() => {
@@ -353,7 +383,7 @@ export function LogisticsMap({ requests, selected, place, onPlace, isDark, shutt
       if (cancelled) return;
       source.setData({ type: "FeatureCollection", features: [lineFeature(line, { color: palette.selected })] });
       const bounds = new mapboxgl.LngLatBounds(); line.forEach(point => bounds.extend(point));
-      map.fitBounds(bounds, { padding: 90, maxZoom: 13, duration: 900 });
+      map.fitBounds(bounds, { padding: pad(90), maxZoom: 13, duration: 900 });
     });
     return () => { cancelled = true; };
   }, [ready, selectedKey, coords, palette]);
@@ -362,8 +392,10 @@ export function LogisticsMap({ requests, selected, place, onPlace, isDark, shutt
   return <div className="absolute inset-0">
     <div ref={container} className="h-full w-full" />
     {navMode && shuttle && (shuttle.trip ? <TripPanel trip={shuttle.trip} /> : <NavPanel shuttle={shuttle} plan={plan} planning={planning} error={planError} />)}
-    {!navMode && <div className="pointer-events-none absolute right-2 top-2 flex flex-wrap justify-end gap-2 text-[11px] font-semibold">
-      {(overviewLines.length > 0 ? [[palette.nav, "Navette à venir"], [palette.transit, "Navette en route"], [palette.selected, "Sélection"]] : [[palette.onSite, "À expédier"], [palette.transit, "En transit"], [palette.selected, "Sélection"]]).map(([color, label]) => <span key={label} className="flex items-center gap-1.5 rounded-full bg-black/70 px-2.5 py-1 text-white"><span className="h-2 w-4 rounded-full" style={{ backgroundColor: color }} />{label}</span>)}
+    {!navMode && <div className="pointer-events-none absolute bottom-3 right-14 flex flex-wrap justify-end gap-2 text-[11px] font-semibold">
+      {overviewLines.length > 0
+        ? <><span className="flex items-center gap-1.5 rounded-full bg-black/70 px-2.5 py-1 text-white"><span className="h-0.5 w-5 bg-white" />En route</span><span className="flex items-center gap-1.5 rounded-full bg-black/70 px-2.5 py-1 text-white"><span className="w-5 border-t-2 border-dashed border-white" />À venir</span><span className="rounded-full bg-black/70 px-2.5 py-1 text-white">Une couleur par navette · cliquez un tracé</span></>
+        : [[palette.onSite, "À expédier"], [palette.transit, "En transit"], [palette.selected, "Sélection"]].map(([color, label]) => <span key={label} className="flex items-center gap-1.5 rounded-full bg-black/70 px-2.5 py-1 text-white"><span className="h-2 w-4 rounded-full" style={{ backgroundColor: color }} />{label}</span>)}
     </div>}
   </div>;
 }
@@ -375,7 +407,7 @@ function TripPanel({ trip }: { trip: NonNullable<Shuttle["trip"]> }) {
   const slot = sameDay(start, end)
     ? `De ${time(start)} à ${time(end)}`
     : `Du ${dayLabel(start)} ${time(start)} au ${dayLabel(end)} ${time(end)}`;
-  return <div className="absolute right-2 top-2 w-[300px] max-w-[calc(100%-1rem)] rounded-2xl border border-[var(--crm-border)] bg-[color:color-mix(in_srgb,var(--crm-surface)_94%,transparent)] px-4 py-3 text-sm text-zinc-100 shadow-2xl backdrop-blur">
+  return <div className="absolute right-3 top-16 w-[300px] max-w-[calc(100%-1rem)] rounded-2xl border border-[var(--crm-border)] bg-[color:color-mix(in_srgb,var(--crm-surface)_94%,transparent)] px-4 py-3 text-sm text-zinc-100 shadow-2xl backdrop-blur">
     <p className="flex items-center gap-1.5 text-base font-bold"><Clock size={15} />{slot}</p>
     {trip.purpose && <p className="mt-1 text-xs text-zinc-400">Motif : <span className="text-zinc-200">{trip.purpose}</span></p>}
   </div>;
@@ -391,7 +423,7 @@ function NavPanel({ shuttle, plan, planning, error }: { shuttle: Shuttle; plan: 
   } else if (plan) {
     headline = `La navette sera complétée${sameDay(plan.end, now) ? "" : ` le ${dayLabel(plan.end)}`} à ${time(plan.end)}`;
   }
-  return <div className="absolute right-2 top-2 flex max-h-[calc(100%-1rem)] w-[340px] max-w-[calc(100%-1rem)] flex-col overflow-hidden rounded-2xl border border-[var(--crm-border)] bg-[color:color-mix(in_srgb,var(--crm-surface)_94%,transparent)] text-sm text-zinc-100 shadow-2xl backdrop-blur">
+  return <div className="absolute right-3 top-16 flex max-h-[calc(100%-5rem)] w-[340px] max-w-[calc(100%-1rem)] flex-col overflow-hidden rounded-2xl border border-[var(--crm-border)] bg-[color:color-mix(in_srgb,var(--crm-surface)_94%,transparent)] text-sm text-zinc-100 shadow-2xl backdrop-blur">
     <div className="shrink-0 px-4 py-3 text-white" style={{ backgroundColor: NAV_COLOR }}>
       <p className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-[0.14em] opacity-90"><Navigation size={13} />Navigation · {shuttle.name}</p>
       {planning ? <p className="mt-1 flex items-center gap-2 font-semibold"><Loader2 size={15} className="animate-spin" />Calcul du meilleur itinéraire…</p>
