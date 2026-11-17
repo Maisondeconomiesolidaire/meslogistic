@@ -319,7 +319,7 @@ function ShuttleInline({ shuttle, canUpdate, dragging, dropActive, dropProps, on
             <button type="button" onClick={() => onSelectRequest(row._id)} className="flex min-w-0 flex-1 items-center gap-3 text-left">
               <Thumb src={row.photoUrl} size={44} className="bg-[var(--crm-surface-3)]" />
               <span className="min-w-0"><span className="block truncate font-semibold">{row.quantity} {row.unit} · {row.title}</span>
-                <span className="mt-0.5 flex items-center gap-1 text-xs text-zinc-400">{shortLocation(row.origin)}<ArrowRight size={11} />{shortLocation(row.destination)}{row.dueDate && <span className={late ? "ml-1 font-semibold text-amber-500" : "ml-1 text-zinc-500"}>· {shortDate(row.dueDate)}</span>}{late && <AlertTriangle size={12} className="text-amber-500" />}</span>{row.storageSlot && <span className="mt-1 flex"><SlotTag slot={row.storageSlot} /></span>}</span>
+                <span className="mt-0.5 flex items-center gap-1 text-xs text-zinc-400">{shortLocation(row.origin)}<ArrowRight size={11} />{shortLocation(row.destination)}{row.dueDate && <span className={late ? "ml-1 font-semibold text-amber-500" : "ml-1 text-zinc-500"}>· {shortDate(row.dueDate)}</span>}{late && <AlertTriangle size={12} className="text-amber-500" />}</span>{row.storageSlot && <span className="mt-1 flex"><SlotTag slot={row.storageSlot} /></span>}{shuttle.fromReservation && row.status === "a_preparer" && <span className={`mt-1 flex w-fit items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-semibold ${row.driverDecision === "proposee" ? "bg-amber-500/15 text-amber-500" : "bg-green-500/15 text-green-500"}`}>{row.driverDecision === "proposee" ? `Proposé · en attente de ${shuttle.driverName ?? "réponse"}` : `Accepté par ${shuttle.driverName ?? "le conducteur"}`}</span>}</span>
             </button>
             <span className="flex shrink-0 flex-col items-end gap-1 text-xs">
               {planned && row.status === "a_preparer" ? <label className={`flex items-center gap-1.5 font-semibold ${row.loadedAt ? "text-green-500" : "text-amber-500"}`}><input type="checkbox" disabled={!canUpdate || busy} checked={Boolean(row.loadedAt)} onChange={event => void run(() => setLoaded({ shuttleId: shuttle._id, requestId: row._id, loaded: event.target.checked }))} />{row.loadedAt ? "Chargé" : "À charger"}</label>
@@ -428,7 +428,7 @@ function OnRoute({ shuttle, candidates, canUpdate, onSelectRequest, onError }: {
                 <span className="flex items-center gap-1 text-xs text-zinc-400">{shortLocation(request.origin)}<ArrowRight size={11} />{shortLocation(request.destination)}</span>
                 <span className={`text-[11px] font-semibold ${detourSeconds < 120 ? "text-green-500" : "text-amber-500"}`}>{detourSeconds < 120 ? "Sans détour" : `+${minutes(detourSeconds)} de détour`}{request.dueDate ? ` · échéance ${shortDate(request.dueDate)}` : ""}</span></span>
             </button>
-            {canUpdate && <Button size="sm" variant="secondary" disabled={busy !== null} onClick={() => void add(request)}><Plus size={14} />{busy === request._id ? "…" : "Ajouter"}</Button>}
+            {canUpdate && <Button size="sm" variant="secondary" disabled={busy !== null} onClick={() => void add(request)}><Plus size={14} />{busy === request._id ? "…" : shuttle.fromReservation ? "Proposer" : "Ajouter"}</Button>}
           </li>)}</ul>}
   </section>;
 }
