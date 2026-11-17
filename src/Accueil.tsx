@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, type DragEvent, type ReactNode } from "react";
 import { useMutation, useQuery } from "convex/react";
-import { AlertTriangle, ArrowLeft, ArrowRight, Bus, CalendarClock, CalendarDays, CarFront, Check, ChevronLeft, ChevronRight, ClipboardCheck, ExternalLink, GripVertical, MapPin, PackageCheck, Map as MapIcon, Plus, Printer, Search, Trash2, Truck, Undo2, X } from "lucide-react";
+import { AlertTriangle, ArrowLeft, ArrowRight, Bus, CalendarClock, CalendarDays, CarFront, Check, ChevronLeft, ChevronRight, ClipboardCheck, ExternalLink, GripVertical, Map as MapIcon, MapPin, PackageCheck, Plus, Printer, Search, Send, Trash2, Truck, Undo2, X } from "lucide-react";
 import { api } from "../convex/_generated/api";
 import type { Id } from "../convex/_generated/dataModel";
 import { Thumb, TRANSIT_COLOR, shortDate } from "./components/crm/LogisticsCard";
@@ -298,6 +298,7 @@ function ShuttleInline({ shuttle, canUpdate, dragging, dropActive, dropProps, on
   const deliver = useMutation(api.meslogisticShuttles.deliverShuttle);
   const deleteShuttle = useMutation(api.meslogisticShuttles.deleteShuttle);
   const cancelDeparture = useMutation(api.meslogisticShuttles.cancelDeparture);
+  const confirmProposals = useMutation(api.meslogisticShuttles.confirmProposals);
   const [busy, setBusy] = useState(false);
   const [confirm, setConfirm] = useState<Confirm | null>(null);
   const planned = shuttle.status === "planifiee";
@@ -310,7 +311,14 @@ function ShuttleInline({ shuttle, canUpdate, dragging, dropActive, dropProps, on
   let actions: ReactNode = null;
   const loadedRows = shuttle.transits.filter(row => row.loadedAt);
   const leftRows = shuttle.transits.filter(row => !row.loadedAt);
+  // Trajet d'un salarié : objets ajoutés mais pas encore proposés (e-mail + notification au conducteur).
+  const drafts = shuttle.fromReservation ? shuttle.transits.filter(row => row.status === "a_preparer" && row.driverDecision === "a_confirmer") : [];
   if (canUpdate && planned) actions = <>
+    {drafts.length > 0 && <Button size="sm" disabled={busy} onClick={() => setConfirm({
+      title: `Proposer ${drafts.length > 1 ? "ces objets" : "cet objet"} à ${shuttle.driverName ?? "le conducteur"} ?`, confirmLabel: "Confirmer et envoyer", icon: <Send size={15} />,
+      body: <><p>{shuttle.driverName ?? "Le conducteur"} recevra un e-mail et une notification dans Mes Outils lui proposant de transporter {drafts.length > 1 ? `ces ${objets(drafts.length)}` : "cet objet"} pendant son trajet. Il ou elle pourra accepter ou refuser chaque objet depuis la page Navettes.</p><ObjectList rows={drafts} /></>,
+      action: () => confirmProposals({ shuttleId: shuttle._id }),
+    })}><Send size={14} />Confirmer ({drafts.length})</Button>}
     {total > 0 && loaded < total && <Button size="sm" variant="secondary" disabled={busy} onClick={() => setConfirm({
       title: "Les produits ont bien été chargés ?", confirmLabel: "Oui, tout est chargé", icon: <Check size={15} />,
       body: <><p>Confirmez que les {objets(total)} de « {shuttle.name} » sont bien dans le véhicule.</p><ObjectList rows={shuttle.transits} /></>,
@@ -335,7 +343,9 @@ function ShuttleInline({ shuttle, canUpdate, dragging, dropActive, dropProps, on
     <Button size="sm" disabled={busy} onClick={() => void run(() => deliver({ shuttleId: shuttle._id }))}><PackageCheck size={14} />Arrivée</Button>
   </>;
 
+  const vehiclePhoto = shuttle.trip?.vehiclePhotoUrl ?? null;
   return <div {...dropProps} className={`flex min-h-0 flex-1 flex-col transition-colors ${dropActive ? "bg-brand-500/10" : ""}`}>
+    {vehiclePhoto && <img src={vehiclePhoto} alt={shuttle.vehicleName ?? "Véhicule"} className="h-36 w-full shrink-0 object-cover" />}
     <div className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2 border-b border-[var(--crm-border)] px-4 py-3">
       <button type="button" onClick={onBack} className="flex items-center gap-1.5 rounded-lg px-2 py-1 text-sm font-semibold text-zinc-400 hover:bg-[var(--crm-surface-2)] hover:text-zinc-100"><X size={16} />Fermer</button>
       <div className="min-w-0">
@@ -364,7 +374,7 @@ function ShuttleInline({ shuttle, canUpdate, dragging, dropActive, dropProps, on
             <button type="button" onClick={() => onSelectRequest(row._id)} className="flex min-w-0 flex-1 items-center gap-3 text-left">
               <Thumb src={row.photoUrl} size={44} className="bg-[var(--crm-surface-3)]" />
               <span className="min-w-0"><span className="block truncate font-semibold">{row.quantity} {row.unit} · {row.title}</span>
-                <span className="mt-0.5 flex items-center gap-1 text-xs text-zinc-400">{shortLocation(row.origin)}<ArrowRight size={11} />{shortLocation(row.destination)}{row.dueDate && <span className={late ? "ml-1 font-semibold text-amber-500" : "ml-1 text-zinc-500"}>· {shortDate(row.dueDate)}</span>}{late && <AlertTriangle size={12} className="text-amber-500" />}</span>{row.storageSlot && <span className="mt-1 flex"><SlotTag slot={row.storageSlot} /></span>}{shuttle.fromReservation && row.status === "a_preparer" && <span className={`mt-1 flex w-fit items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-semibold ${row.driverDecision === "proposee" ? "bg-amber-500/15 text-amber-500" : "bg-green-500/15 text-green-500"}`}>{row.driverDecision === "proposee" ? `Proposé · en attente de ${shuttle.driverName ?? "réponse"}` : `Accepté par ${shuttle.driverName ?? "le conducteur"}`}</span>}</span>
+                <span className="mt-0.5 flex items-center gap-1 text-xs text-zinc-400">{shortLocation(row.origin)}<ArrowRight size={11} />{shortLocation(row.destination)}{row.dueDate && <span className={late ? "ml-1 font-semibold text-amber-500" : "ml-1 text-zinc-500"}>· {shortDate(row.dueDate)}</span>}{late && <AlertTriangle size={12} className="text-amber-500" />}</span>{row.storageSlot && <span className="mt-1 flex"><SlotTag slot={row.storageSlot} /></span>}{shuttle.fromReservation && row.status === "a_preparer" && <span className={`mt-1 flex w-fit items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-semibold ${row.driverDecision === "a_confirmer" ? "bg-sky-500/15 text-sky-400" : row.driverDecision === "proposee" ? "bg-amber-500/15 text-amber-500" : "bg-green-500/15 text-green-500"}`}>{row.driverDecision === "a_confirmer" ? "À confirmer · pas encore envoyé" : row.driverDecision === "proposee" ? `Proposé · en attente de ${shuttle.driverName ?? "réponse"}` : `Accepté par ${shuttle.driverName ?? "le conducteur"}`}</span>}</span>
             </button>
             <span className="flex shrink-0 flex-col items-end gap-1 text-xs">
               {planned && row.status === "a_preparer" ? <label className={`flex items-center gap-1.5 font-semibold ${row.loadedAt ? "text-green-500" : "text-amber-500"}`}><input type="checkbox" disabled={!canUpdate || busy} checked={Boolean(row.loadedAt)} onChange={event => void run(() => setLoaded({ shuttleId: shuttle._id, requestId: row._id, loaded: event.target.checked }))} />{row.loadedAt ? "Chargé" : "À charger"}</label>
