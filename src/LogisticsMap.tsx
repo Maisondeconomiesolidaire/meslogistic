@@ -276,10 +276,23 @@ export function LogisticsMap({ requests, selected, place, onPlace, isDark, shutt
   if (!TOKEN) return <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-sm text-zinc-500"><MapPinOff size={28} />Carte indisponible : VITE_MAPBOX_ACCESS_TOKEN manquant.</div>;
   return <div className="absolute inset-0">
     <div ref={container} className="h-full w-full" />
-    {navMode && shuttle && <NavPanel shuttle={shuttle} plan={plan} planning={planning} error={planError} />}
+    {navMode && shuttle && (shuttle.trip ? <TripPanel trip={shuttle.trip} /> : <NavPanel shuttle={shuttle} plan={plan} planning={planning} error={planError} />)}
     {!navMode && <div className="pointer-events-none absolute right-2 top-2 flex flex-wrap justify-end gap-2 text-[11px] font-semibold">
       {[[palette.onSite, "À expédier"], [palette.transit, "En transit"], [palette.selected, "Sélection"]].map(([color, label]) => <span key={label} className="flex items-center gap-1.5 rounded-full bg-black/70 px-2.5 py-1 text-white"><span className="h-2 w-4 rounded-full" style={{ backgroundColor: color }} />{label}</span>)}
     </div>}
+  </div>;
+}
+
+/** Trajet d'un salarié (réservation Mes Outils) : seulement son créneau et le motif. */
+function TripPanel({ trip }: { trip: NonNullable<Shuttle["trip"]> }) {
+  const start = new Date(trip.start);
+  const end = new Date(trip.end);
+  const slot = sameDay(start, end)
+    ? `De ${time(start)} à ${time(end)}`
+    : `Du ${dayLabel(start)} ${time(start)} au ${dayLabel(end)} ${time(end)}`;
+  return <div className="absolute right-2 top-2 w-[300px] max-w-[calc(100%-1rem)] rounded-2xl border border-[var(--crm-border)] bg-[color:color-mix(in_srgb,var(--crm-surface)_94%,transparent)] px-4 py-3 text-sm text-zinc-100 shadow-2xl backdrop-blur">
+    <p className="flex items-center gap-1.5 text-base font-bold"><Clock size={15} />{slot}</p>
+    {trip.purpose && <p className="mt-1 text-xs text-zinc-400">Motif : <span className="text-zinc-200">{trip.purpose}</span></p>}
   </div>;
 }
 
