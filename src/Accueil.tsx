@@ -345,7 +345,7 @@ function ShuttleInline({ shuttle, canUpdate, dragging, dropActive, dropProps, on
 
   const vehiclePhoto = shuttle.trip?.vehiclePhotoUrl ?? null;
   return <div {...dropProps} className={`flex min-h-0 flex-1 flex-col transition-colors ${dropActive ? "bg-brand-500/10" : ""}`}>
-    {vehiclePhoto && <img src={vehiclePhoto} alt={shuttle.vehicleName ?? "Véhicule"} className="h-36 w-full shrink-0 object-cover" />}
+    {vehiclePhoto && <img src={vehiclePhoto} alt={shuttle.vehicleName ?? "Véhicule"} className="h-28 w-full shrink-0 bg-[var(--crm-surface-2)] object-contain p-2" />}
     <div className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2 border-b border-[var(--crm-border)] px-4 py-3">
       <button type="button" onClick={onBack} className="flex items-center gap-1.5 rounded-lg px-2 py-1 text-sm font-semibold text-zinc-400 hover:bg-[var(--crm-surface-2)] hover:text-zinc-100"><X size={16} />Fermer</button>
       <div className="min-w-0">
