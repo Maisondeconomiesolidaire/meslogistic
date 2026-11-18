@@ -45,6 +45,20 @@ export function locate(place: string): Promise<LngLat | null> {
   return pending;
 }
 
+/** Adresse d'un client : géocodée telle quelle (une adresse à Lachapelle ou Gournay n'est pas un de nos sites). */
+const addressCache = new Map<string, Promise<LngLat | null>>();
+function geocodeAddress(address: string): Promise<LngLat | null> {
+  const key = address.trim().toLocaleLowerCase("fr-FR");
+  if (!TOKEN || !key) return Promise.resolve(null);
+  let pending = addressCache.get(key);
+  if (!pending) {
+    const url = `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(address)}.json?limit=1&country=fr&language=fr&proximity=1.9,49.45&access_token=${TOKEN}`;
+    pending = fetch(url).then(response => response.ok ? response.json() : null).then((data: { features?: { center?: LngLat }[] } | null) => data?.features?.[0]?.center ?? null).catch(() => null);
+    addressCache.set(key, pending);
+  }
+  return pending;
+}
+
 /** Tracé routier entre deux points (ligne droite si Mapbox ne répond pas). */
 const roadCache = new Map<string, Promise<LngLat[]>>();
 function road(from: LngLat, to: LngLat): Promise<LngLat[]> {
@@ -117,7 +131,7 @@ const pointKey = (at: LngLat) => `${at[0].toFixed(3)},${at[1].toFixed(3)}`;
 /** Tracé d'une collecte : celui calculé par Recycapp, sinon par la route depuis le dépôt (Solidarium) jusqu'au client ; une tournée GDR revient au dépôt. */
 async function collecteLine(collecte: Collecte): Promise<{ line: LngLat[]; places: string[]; stops: Array<LngLat | null> } | null> {
   // Les demandes du calendrier n'ont que l'adresse : géocodée ici (mise en cache).
-  const located = await Promise.all(collecte.stops.map(stop => stop.at ? Promise.resolve(stop.at) : locate(stop.address)));
+  const located = await Promise.all(collecte.stops.map(stop => stop.at ? Promise.resolve(stop.at) : geocodeAddress(stop.address)));
   const stops = located.flatMap(at => at ? [at] : []);
   const points = collecte.depot ? [collecte.depot, ...stops, ...(collecte.roundTrip ? [collecte.depot] : [])] : stops;
   const places = points.map(pointKey);
@@ -294,6 +308,9 @@ export function LogisticsMap({ requests, selected, place, onPlace, isDark, shutt
       map.addLayer({ id: "shuttles-label", type: "symbol", source: "shuttles", minzoom: 10.2, layout: { "symbol-placement": "line", "text-field": ["get", "name"], "text-size": 12, "text-font": ["DIN Pro Medium", "Arial Unicode MS Regular"], "symbol-spacing": 320 }, paint: { "text-color": ["get", "color"], "text-halo-color": "#ffffff", "text-halo-width": 2 } });
       // Zone de clic plus large que le trait.
       map.addLayer({ id: "shuttles-hit", type: "line", source: "shuttles", paint: { "line-color": "#000000", "line-width": 18, "line-opacity": 0 } });
+      map.addSource("collecte-ends", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
+      map.addLayer({ id: "collecte-ends", type: "circle", source: "collecte-ends", paint: { "circle-radius": ["interpolate", ["linear"], ["zoom"], 8, 4, 13, 7], "circle-color": ["get", "color"], "circle-stroke-color": "#ffffff", "circle-stroke-width": 2 } });
+      map.addLayer({ id: "collecte-ends-label", type: "symbol", source: "collecte-ends", minzoom: 10.2, layout: { "text-field": ["get", "name"], "text-size": 11, "text-offset": [0, 1.2], "text-anchor": "top", "text-font": ["DIN Pro Medium", "Arial Unicode MS Regular"] }, paint: { "text-color": "#18181b", "text-halo-color": "#ffffff", "text-halo-width": 1.5 } });
       map.addSource("selected", { type: "geojson", data: emptyCollection });
       map.addLayer({ id: "selected", type: "line", source: "selected", layout: { "line-cap": "round", "line-join": "round" }, paint: { "line-color": ["get", "color"], "line-width": 7, "line-opacity": 0.95 } });
       setReady(version => version + 1);
@@ -307,13 +324,19 @@ export function LogisticsMap({ requests, selected, place, onPlace, isDark, shutt
       }
       return [...seen.values()];
     };
+    map.on("click", "collecte-ends", event => {
+      const found = shuttlesAt(event.features);
+      if (found.length) openLineRef.current(found[0]);
+    });
+    map.on("mouseenter", "collecte-ends", () => { map.getCanvas().style.cursor = "pointer"; });
+    map.on("mouseleave", "collecte-ends", () => { map.getCanvas().style.cursor = ""; });
     map.on("click", "shuttles-hit", event => {
       const found = shuttlesAt(event.features);
       if (found.length === 1) { openLineRef.current(found[0]); return; }
       if (found.length > 1) setChooser({ x: event.point.x, y: event.point.y, items: found });
     });
     map.on("click", event => {
-      if (!map.queryRenderedFeatures(event.point, { layers: ["shuttles-hit"] }).length) setChooser(null);
+      if (!map.queryRenderedFeatures(event.point, { layers: ["shuttles-hit", "collecte-ends"] }).length) setChooser(null);
     });
     map.on("movestart", () => setChooser(null));
     const popup = new mapboxgl.Popup({ closeButton: false, closeOnClick: false, offset: 10 });
@@ -377,7 +400,15 @@ export function LogisticsMap({ requests, selected, place, onPlace, isDark, shutt
       type: "FeatureCollection",
       features: overviewLines.map(item => lineFeature(item.line, { id: item.id, name: item.name, status: item.status, color: item.color, kind: item.kind })),
     });
-  }, [ready, overviewLines, navMode, palette]);
+    const ends = mapRef.current?.getSource("collecte-ends") as mapboxgl.GeoJSONSource | undefined;
+    ends?.setData({
+      type: "FeatureCollection",
+      features: navMode ? [] : overviewLines.filter(item => item.kind === "collecte").flatMap(item => {
+        const end = [...(collecteLines.find(line => line.id === item.id)?.stops ?? [])].reverse().find((at): at is LngLat => Boolean(at)) ?? item.line[item.line.length - 1];
+        return end ? [{ type: "Feature" as const, properties: { id: item.id, name: item.name.replace(/^Collecte /, ""), color: item.color, kind: "collecte", status: item.status }, geometry: { type: "Point" as const, coordinates: end } }] : [];
+      }),
+    });
+  }, [ready, overviewLines, navMode, palette, collecteLines]);
   const openColor = shuttle ? allLines.find(item => item.id === shuttle._id)?.color ?? palette.nav : palette.nav;
   const collecteColor = openCollecte ? allLines.find(item => item.id === openCollecte._id)?.color ?? palette.nav : palette.nav;
 
