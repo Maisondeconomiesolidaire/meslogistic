@@ -80,7 +80,8 @@ export function Accueil({ canCreate, canUpdate, isDark }: { canCreate: boolean; 
   const secondWidth = second === "request" ? 380 : second === "shuttle" ? 460 : second === "collecte" ? 380 : 0;
   const leftInset = 352 + (second ? secondWidth + 12 : 0);
   const openFromCalendar = (id: string | null) => { setOpenShuttleId(id); if (id) { setSelectedId(null); setOpenCollecteId(null); setTab("carte"); } };
-  const card = "overflow-hidden rounded-3xl border border-[var(--crm-border)] bg-[var(--crm-surface)] shadow-2xl";
+  // Contour de la carte flottante : vert pour une collecte, orange pour une réservation de véhicule, bleu pour une navette.
+  const card = (border = "border border-[var(--crm-border)]") => `overflow-hidden rounded-3xl ${border} bg-[var(--crm-surface)] shadow-2xl`;
 
   return <div className="relative flex h-[calc(100dvh-3.5rem)] flex-col gap-3 overflow-y-auto p-3 lg:block lg:h-dvh lg:overflow-hidden lg:p-0">
     {/* Onglets : la carte ou le calendrier */}
@@ -108,7 +109,7 @@ export function Accueil({ canCreate, canUpdate, isDark }: { canCreate: boolean; 
     </div>}
 
     {/* Carte 1 : les demandes */}
-    <aside className={`z-10 flex min-h-[420px] w-full shrink-0 flex-col lg:absolute lg:bottom-3 lg:left-3 lg:top-3 lg:min-h-0 lg:w-[340px] ${card}`}>
+    <aside className={`z-10 flex min-h-[420px] w-full shrink-0 flex-col lg:absolute lg:bottom-3 lg:left-3 lg:top-3 lg:min-h-0 lg:w-[340px] ${card()}`}>
       <div className="shrink-0 space-y-3 border-b border-[var(--crm-border)] p-4">
         <div className="flex items-baseline justify-between gap-2"><h1 className="text-lg font-bold">Demandes</h1><span className="text-xs text-zinc-500">{objets(visible.length)} · échéance la plus proche d’abord</span></div>
         <label className="flex items-center gap-2 rounded-xl bg-[var(--crm-surface-2)] px-3 py-2 text-sm"><Search size={15} className="shrink-0 text-zinc-500" /><input value={search} onChange={event => setSearch(event.target.value)} placeholder="Objet, référence, client…" className="min-w-0 flex-1 bg-transparent outline-none placeholder:text-zinc-500" /></label>
@@ -129,10 +130,10 @@ export function Accueil({ canCreate, canUpdate, isDark }: { canCreate: boolean; 
     {second === "request" && selected && <div className="z-10 flex lg:absolute lg:bottom-3 lg:left-[364px] lg:top-3 lg:w-[380px] [&>aside]:shadow-2xl">
       <RequestPanel request={selected} shuttleName={shuttleName(selected.shuttleId)} onClose={() => setSelectedId(null)} onOpenFull={() => setFullSheet(true)} />
     </div>}
-    {second === "shuttle" && openShuttle && <ShuttleCard key={openShuttle._id} shuttle={openShuttle} className={`z-10 flex min-h-[420px] flex-col lg:absolute lg:bottom-3 lg:left-[364px] lg:top-3 lg:min-h-0 lg:w-[460px] ${card}`}
+    {second === "shuttle" && openShuttle && <ShuttleCard key={openShuttle._id} shuttle={openShuttle} className={`z-10 flex min-h-[420px] flex-col lg:absolute lg:bottom-3 lg:left-[364px] lg:top-3 lg:min-h-0 lg:w-[460px] ${card(openShuttle.fromReservation ? "border-2 border-orange-500" : "border-2 border-blue-500")}`}
       canUpdate={canUpdate} dragging={dragging} onClose={() => setOpenShuttleId(null)} onSelectRequest={id => setSelectedId(id)} selectedId={selectedId} navPlan={navPlan} candidates={candidates} />}
     {second === "collecte" && openCollecte && <CollecteCard key={openCollecte._id} collecte={openCollecte} onClose={() => setOpenCollecteId(null)}
-      className={`z-10 flex min-h-[420px] flex-col lg:absolute lg:bottom-3 lg:left-[364px] lg:top-3 lg:min-h-0 lg:w-[380px] ${card}`} />}
+      className={`z-10 flex min-h-[420px] flex-col lg:absolute lg:bottom-3 lg:left-[364px] lg:top-3 lg:min-h-0 lg:w-[380px] ${card("border-2 border-emerald-600")}`} />}
     {selected && fullSheet && <RequestDetail request={selected} canUpdate={canUpdate} onClose={() => setFullSheet(false)} />}
   </div>;
 }
