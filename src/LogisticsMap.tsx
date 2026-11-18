@@ -114,15 +114,17 @@ type Layer = "tout" | "navettes" | "collectes";
 type Collecte = NonNullable<ReturnType<typeof useQuery<typeof api.meslogisticShuttles.collectes>>>[number];
 const pointKey = (at: LngLat) => `${at[0].toFixed(3)},${at[1].toFixed(3)}`;
 
-/** Tracé d'une tournée de collecte : celui calculé par Recycapp, sinon dépôt → arrêts → dépôt par la route. */
-async function collecteLine(collecte: Collecte): Promise<{ line: LngLat[]; places: string[] } | null> {
-  const stops = collecte.stops.flatMap(stop => stop.at ? [stop.at] : []);
-  const points = collecte.depot ? [collecte.depot, ...stops, collecte.depot] : stops;
+/** Tracé d'une collecte : celui calculé par Recycapp, sinon par la route depuis le dépôt (Solidarium) jusqu'au client ; une tournée GDR revient au dépôt. */
+async function collecteLine(collecte: Collecte): Promise<{ line: LngLat[]; places: string[]; stops: Array<LngLat | null> } | null> {
+  // Les demandes du calendrier n'ont que l'adresse : géocodée ici (mise en cache).
+  const located = await Promise.all(collecte.stops.map(stop => stop.at ? Promise.resolve(stop.at) : locate(stop.address)));
+  const stops = located.flatMap(at => at ? [at] : []);
+  const points = collecte.depot ? [collecte.depot, ...stops, ...(collecte.roundTrip ? [collecte.depot] : [])] : stops;
   const places = points.map(pointKey);
-  if (collecte.route && collecte.route.length > 1) return { line: collecte.route, places };
+  if (collecte.route && collecte.route.length > 1) return { line: collecte.route, places, stops: located };
   if (points.length < 2) return null;
   const legs = await Promise.all(points.slice(1).map((point, index) => road(points[index], point)));
-  return { line: legs.flat(), places };
+  return { line: legs.flat(), places, stops: located };
 }
 
 /** Propriétés d'un objet cliqué sur la carte (le typage Mapbox ne les expose pas). */
@@ -230,7 +232,7 @@ export function LogisticsMap({ requests, selected, place, onPlace, isDark, shutt
   const collectesKey = (collectes ?? []).map(item => `${item._id}:${item.status}:${item.stops.map(stop => stop.at ? pointKey(stop.at) : "").join(",")}:${item.route?.length ?? 0}`).join("§");
   const collectesRef = useRef(collectes);
   collectesRef.current = collectes;
-  const [collecteLines, setCollecteLines] = useState<Array<{ id: string; name: string; status: string; line: LngLat[]; places: string[] }>>([]);
+  const [collecteLines, setCollecteLines] = useState<Array<{ id: string; name: string; status: string; line: LngLat[]; places: string[]; stops?: Array<LngLat | null> }>>([]);
   useEffect(() => {
     let cancelled = false;
     const current = collectesRef.current ?? [];
@@ -238,7 +240,7 @@ export function LogisticsMap({ requests, selected, place, onPlace, isDark, shutt
       .then(results => {
         if (cancelled) return;
         // Une tournée en cours est tracée en plein, comme une navette en route.
-        setCollecteLines(results.flatMap(({ item, route }) => route ? [{ id: item._id as string, name: item.label || "Collecte", status: item.status === "en_cours" ? "en_route" : "planifiee", line: route.line, places: route.places }] : []));
+        setCollecteLines(results.flatMap(({ item, route }) => route ? [{ id: item._id as string, name: item.label || "Collecte", status: item.status === "en_cours" ? "en_route" : "planifiee", line: route.line, places: route.places, stops: route.stops }] : []));
       });
     return () => { cancelled = true; };
   }, [collectesKey]);
@@ -398,9 +400,10 @@ export function LogisticsMap({ requests, selected, place, onPlace, isDark, shutt
     collecteMarkers.current = [];
     if (!ready || !map || navMode || !openCollecte) return;
     const line = allLines.find(item => item.id === openCollecte._id)?.line ?? [];
+    const located = collecteLines.find(item => item.id === openCollecte._id)?.stops ?? [];
     const points: Array<{ at: LngLat; label: string; badge: string }> = [
       ...(openCollecte.depot ? [{ at: openCollecte.depot, label: "Dépôt", badge: "D" }] : []),
-      ...openCollecte.stops.flatMap((stop, index) => stop.at ? [{ at: stop.at, label: stop.contactName ?? stop.address.split(",")[0], badge: String(index + 1) }] : []),
+      ...openCollecte.stops.flatMap((stop, index) => { const at = stop.at ?? located[index]; return at ? [{ at, label: stop.time ? `${time(new Date(stop.time))} · ${stop.contactName ?? stop.address.split(",")[0]}` : stop.contactName ?? stop.address.split(",")[0], badge: String(index + 1) }] : []; }),
     ];
     collecteMarkers.current = points.map(point => {
       const element = document.createElement("div");
@@ -421,7 +424,7 @@ export function LogisticsMap({ requests, selected, place, onPlace, isDark, shutt
     const bounds = new mapboxgl.LngLatBounds();
     [...line, ...points.map(point => point.at)].forEach(point => bounds.extend(point));
     if (!bounds.isEmpty()) map.fitBounds(bounds, { padding: { ...pad(70), right: 360 }, maxZoom: 13, duration: 900 });
-  }, [ready, openCollecte?._id, navMode, detailed, collecteColor, allLines.length]);
+  }, [ready, openCollecte?._id, navMode, detailed, collecteColor, allLines.length, collecteLines]);
 
   // Tracé de navigation et cadrage sur la tournée.
   useEffect(() => {
@@ -531,7 +534,7 @@ export function LogisticsMap({ requests, selected, place, onPlace, isDark, shutt
         {Icon && <Icon size={14} />}{label}<span className={`rounded-full px-1.5 text-[11px] tabular-nums ${layer === key ? "bg-white/20" : "bg-zinc-200"}`}>{count}</span>
       </button>)}
     </div>}
-    {!navMode && openCollecte && <CollectePanel collecte={openCollecte} color={collecteColor} onClose={() => setOpenCollecteId(null)} />}
+    {!navMode && openCollecte && <CollectePanel collecte={openCollecte} color={collecteColor} located={collecteLines.find(item => item.id === openCollecte._id)?.stops} onClose={() => setOpenCollecteId(null)} />}
     {navMode && shuttle && (shuttle.trip ? <TripPanel trip={shuttle.trip} /> : <NavPanel shuttle={shuttle} plan={plan} planning={planning} error={planError} />)}
     {!navMode && <div className="pointer-events-none absolute bottom-3 right-14 flex flex-wrap justify-end gap-2 text-[11px] font-semibold">
       {overviewLines.length > 0
@@ -555,14 +558,14 @@ function TripPanel({ trip }: { trip: NonNullable<Shuttle["trip"]> }) {
 }
 
 /** Tournée de collecte Recycapp : date, équipe, arrêts dans l'ordre. */
-function CollectePanel({ collecte, color, onClose }: { collecte: Collecte; color: string; onClose: () => void }) {
+function CollectePanel({ collecte, color, located, onClose }: { collecte: Collecte; color: string; located?: Array<LngLat | null>; onClose: () => void }) {
   const date = new Date(collecte.date);
   const facts = [collecte.driverName, collecte.vehicleName, collecte.distanceMeters ? `${Math.round(collecte.distanceMeters / 1000)} km` : null, collecte.durationSeconds ? duration(collecte.durationSeconds) : null].filter(Boolean);
   return <div className="absolute right-3 top-16 flex max-h-[calc(100%-5rem)] w-[320px] max-w-[calc(100%-1rem)] flex-col overflow-hidden rounded-2xl border border-[var(--crm-border)] bg-[color:color-mix(in_srgb,var(--crm-surface)_94%,transparent)] text-sm text-zinc-100 shadow-2xl backdrop-blur">
     <div className="flex items-start gap-2 border-b border-[var(--crm-border)] px-4 py-3">
       <span className="mt-1.5 h-1.5 w-6 shrink-0 rounded-full" style={{ backgroundColor: color }} />
       <div className="min-w-0 flex-1">
-        <p className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-zinc-400"><Recycle size={13} />Collecte Recycapp · {collecte.status === "en_cours" ? "en cours" : "à venir"}</p>
+        <p className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-zinc-400"><Recycle size={13} />Recycapp · {collecte.stops.length > 1 ? `${collecte.stops.length} collectes` : "collecte"} · {collecte.status === "en_cours" ? "en cours" : "à venir"}</p>
         <p className="truncate text-base font-bold">{collecte.label || "Tournée de collecte"}</p>
         <p className="text-xs capitalize text-zinc-400">{dayLabel(date)}</p>
         {facts.length > 0 && <p className="mt-0.5 text-xs text-zinc-300">{facts.join(" · ")}</p>}
@@ -574,10 +577,10 @@ function CollectePanel({ collecte, color, onClose }: { collecte: Collecte; color
       {collecte.stops.map((stop, index) => <li key={`${stop.order}-${index}`} className="flex gap-2.5 rounded-xl px-2 py-1.5">
         <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[11px] font-bold text-white" style={{ backgroundColor: color }}>{index + 1}</span>
         <span className="min-w-0">
-          {stop.contactName && <span className="block truncate font-semibold">{stop.contactName}</span>}
+          {(stop.contactName || stop.time) && <span className="block truncate font-semibold">{stop.time ? `${time(new Date(stop.time))} · ` : ""}{stop.contactName}{stop.reference ? <span className="font-normal text-zinc-500"> · {stop.reference}</span> : null}</span>}
           <span className="block text-xs text-zinc-400">{stop.address}</span>
           {stop.status === "effectue" && <span className="text-[11px] font-semibold text-green-500">Effectuée</span>}
-          {!stop.at && <span className="text-[11px] text-amber-500">Adresse non localisée</span>}
+          {located && !stop.at && !located[index] && <span className="text-[11px] text-amber-500">Adresse non localisée</span>}
         </span>
       </li>)}
       {collecte.stops.length === 0 && <li className="px-2 py-1.5 text-xs text-zinc-500">Aucun arrêt.</li>}
