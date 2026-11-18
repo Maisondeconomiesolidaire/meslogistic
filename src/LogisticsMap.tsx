@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useQuery } from "convex/react";
 import mapboxgl from "mapbox-gl";
 import "mapbox-gl/dist/mapbox-gl.css";
-import { Clock, Loader2, MapPinOff, Navigation } from "lucide-react";
+import { Clock, Loader2, MapPinOff, Navigation, Recycle, Truck, X } from "lucide-react";
+import { api } from "../convex/_generated/api";
 import { shortLocation, type Request } from "./Demandes";
 import { ON_SITE_COLOR, TRANSIT_COLOR } from "./components/crm/LogisticsCard";
 import type { Shuttle } from "./ShuttleBoard";
@@ -105,7 +107,23 @@ function colorShuttles(items: Array<{ id: string; places: string[] }>) {
   return colors;
 }
 
-type ShuttleChoice = { id: string; name: string; color: string; status: string };
+type LineKind = "navette" | "collecte";
+type ShuttleChoice = { id: string; name: string; color: string; status: string; kind: LineKind };
+/** Filtre de la carte (pastilles en haut). */
+type Layer = "tout" | "navettes" | "collectes";
+type Collecte = NonNullable<ReturnType<typeof useQuery<typeof api.meslogisticShuttles.collectes>>>[number];
+const pointKey = (at: LngLat) => `${at[0].toFixed(3)},${at[1].toFixed(3)}`;
+
+/** Tracé d'une tournée de collecte : celui calculé par Recycapp, sinon dépôt → arrêts → dépôt par la route. */
+async function collecteLine(collecte: Collecte): Promise<{ line: LngLat[]; places: string[] } | null> {
+  const stops = collecte.stops.flatMap(stop => stop.at ? [stop.at] : []);
+  const points = collecte.depot ? [collecte.depot, ...stops, collecte.depot] : stops;
+  const places = points.map(pointKey);
+  if (collecte.route && collecte.route.length > 1) return { line: collecte.route, places };
+  if (points.length < 2) return null;
+  const legs = await Promise.all(points.slice(1).map((point, index) => road(points[index], point)));
+  return { line: legs.flat(), places };
+}
 
 /** Propriétés d'un objet cliqué sur la carte (le typage Mapbox ne les expose pas). */
 const featureProps = (feature: unknown) => ((feature as { properties?: Record<string, unknown> } | undefined)?.properties ?? {});
@@ -195,19 +213,49 @@ export function LogisticsMap({ requests, selected, place, onPlace, isDark, shutt
   const overviewKey = overview.map(routeKey).join("§");
   const overviewRef = useRef(overview);
   overviewRef.current = overview;
-  const [overviewLines, setOverviewLines] = useState<Array<{ id: string; name: string; status: string; line: LngLat[]; color: string }>>([]);
+  const [shuttleLines, setShuttleLines] = useState<Array<{ id: string; name: string; status: string; line: LngLat[]; places: string[] }>>([]);
   useEffect(() => {
     let cancelled = false;
     const current = overviewRef.current;
     void Promise.all(current.map(async item => ({ id: item._id as string, name: item.name, status: String(item.status), route: await overviewLine(item).catch(() => null) })))
       .then(results => {
         if (cancelled) return;
-        const drawn = results.flatMap(result => result.route ? [{ ...result, route: result.route }] : []);
-        const colors = colorShuttles(drawn.map(item => ({ id: item.id, places: item.route.places })));
-        setOverviewLines(drawn.map(item => ({ id: item.id, name: item.name, status: item.status, line: item.route.line, color: colors.get(item.id)! })));
+        setShuttleLines(results.flatMap(result => result.route ? [{ id: result.id, name: result.name, status: result.status, line: result.route.line, places: result.route.places }] : []));
       });
     return () => { cancelled = true; };
   }, [overviewKey]);
+
+  // Tournées de collecte Recycapp à venir ou en cours.
+  const collectes = useQuery(api.meslogisticShuttles.collectes);
+  const collectesKey = (collectes ?? []).map(item => `${item._id}:${item.status}:${item.stops.map(stop => stop.at ? pointKey(stop.at) : "").join(",")}:${item.route?.length ?? 0}`).join("§");
+  const collectesRef = useRef(collectes);
+  collectesRef.current = collectes;
+  const [collecteLines, setCollecteLines] = useState<Array<{ id: string; name: string; status: string; line: LngLat[]; places: string[] }>>([]);
+  useEffect(() => {
+    let cancelled = false;
+    const current = collectesRef.current ?? [];
+    void Promise.all(current.map(async item => ({ item, route: await collecteLine(item).catch(() => null) })))
+      .then(results => {
+        if (cancelled) return;
+        // Une tournée en cours est tracée en plein, comme une navette en route.
+        setCollecteLines(results.flatMap(({ item, route }) => route ? [{ id: item._id as string, name: item.label || "Collecte", status: item.status === "en_cours" ? "en_route" : "planifiee", line: route.line, places: route.places }] : []));
+      });
+    return () => { cancelled = true; };
+  }, [collectesKey]);
+
+  // Tous les tracés, une couleur chacun ; deux trajets qui partagent un lieu n'ont jamais la même.
+  const allLines = useMemo(() => {
+    const items = [...shuttleLines.map(line => ({ ...line, kind: "navette" as LineKind })), ...collecteLines.map(line => ({ ...line, kind: "collecte" as LineKind }))];
+    const colors = colorShuttles(items.map(item => ({ id: item.id, places: item.places.map(place => item.kind === "navette" ? place : `@${place}`) })));
+    return items.map(item => ({ ...item, color: colors.get(item.id)! }));
+  }, [shuttleLines, collecteLines]);
+  const [layer, setLayer] = useState<Layer>("tout");
+  const overviewLines = useMemo(() => allLines.filter(item => layer === "tout" || (layer === "navettes" ? item.kind === "navette" : item.kind === "collecte")), [allLines, layer]);
+  // Tournée de collecte ouverte (clic sur son tracé).
+  const [openCollecteId, setOpenCollecteId] = useState<string | null>(null);
+  const openCollecte = collectes?.find(item => item._id === openCollecteId) ?? null;
+  useEffect(() => { if (shuttle) setOpenCollecteId(null); }, [shuttle]);
+  useEffect(() => { if (openCollecteId && collectes && !collectes.some(item => item._id === openCollecteId)) setOpenCollecteId(null); }, [collectes, openCollecteId]);
   // Niveau de détail selon le zoom : vue d'ensemble compacte, détails en zoomant.
   const [detailed, setDetailed] = useState(false);
   // Plusieurs navettes au même endroit : liste pour choisir laquelle ouvrir.
@@ -215,6 +263,9 @@ export function LogisticsMap({ requests, selected, place, onPlace, isDark, shutt
   useEffect(() => { if (navMode) setChooser(null); }, [navMode]);
   const onOpenShuttleRef = useRef(onOpenShuttle);
   onOpenShuttleRef.current = onOpenShuttle;
+  const openLine = (item: ShuttleChoice) => { setChooser(null); if (item.kind === "collecte") setOpenCollecteId(item.id); else { setOpenCollecteId(null); onOpenShuttle?.(item.id); } };
+  const openLineRef = useRef(openLine);
+  openLineRef.current = openLine;
 
   // Création de la carte, une seule fois.
   useEffect(() => {
@@ -249,14 +300,14 @@ export function LogisticsMap({ requests, selected, place, onPlace, isDark, shutt
     const shuttlesAt = (features: unknown[] | undefined) => {
       const seen = new Map<string, ShuttleChoice>();
       for (const feature of features ?? []) {
-        const { id, name, color, status } = featureProps(feature);
-        if (typeof id === "string" && !seen.has(id)) seen.set(id, { id, name: String(name ?? "Navette"), color: String(color ?? NAV_COLOR), status: String(status ?? "") });
+        const { id, name, color, status, kind } = featureProps(feature);
+        if (typeof id === "string" && !seen.has(id)) seen.set(id, { id, name: String(name ?? "Navette"), color: String(color ?? NAV_COLOR), status: String(status ?? ""), kind: kind === "collecte" ? "collecte" : "navette" });
       }
       return [...seen.values()];
     };
     map.on("click", "shuttles-hit", event => {
       const found = shuttlesAt(event.features);
-      if (found.length === 1) { setChooser(null); onOpenShuttleRef.current?.(found[0].id); return; }
+      if (found.length === 1) { openLineRef.current(found[0]); return; }
       if (found.length > 1) setChooser({ x: event.point.x, y: event.point.y, items: found });
     });
     map.on("click", event => {
@@ -270,8 +321,8 @@ export function LogisticsMap({ requests, selected, place, onPlace, isDark, shutt
       if (!found.length) return;
       const escape = (text: string) => text.replace(/[<>&]/g, "");
       popup.setLngLat(event.lngLat).setHTML(found.length === 1
-        ? `<strong style="color:#09090b">${escape(found[0].name)}</strong>`
-        : `<strong style="color:#09090b">${found.length} navettes ici</strong><br><span style="color:#52525b">Cliquez pour choisir</span>`).addTo(map);
+        ? `<span style="color:#52525b;font-size:11px">${found[0].kind === "collecte" ? "Collecte" : "Navette"}</span><br><strong style="color:#09090b">${escape(found[0].name)}</strong>`
+        : `<strong style="color:#09090b">${found.length} trajets ici</strong><br><span style="color:#52525b">Cliquez pour choisir</span>`).addTo(map);
     });
     map.on("mouseleave", "shuttles-hit", () => { map.getCanvas().style.cursor = ""; popup.remove(); });
     const observer = new ResizeObserver(() => map.resize());
@@ -322,10 +373,55 @@ export function LogisticsMap({ requests, selected, place, onPlace, isDark, shutt
     if (!source) return;
     source.setData(navMode ? emptyCollection : {
       type: "FeatureCollection",
-      features: overviewLines.map(item => lineFeature(item.line, { id: item.id, name: item.name, status: item.status, color: item.color })),
+      features: overviewLines.map(item => lineFeature(item.line, { id: item.id, name: item.name, status: item.status, color: item.color, kind: item.kind })),
     });
   }, [ready, overviewLines, navMode, palette]);
-  const openColor = shuttle ? overviewLines.find(item => item.id === shuttle._id)?.color ?? palette.nav : palette.nav;
+  const openColor = shuttle ? allLines.find(item => item.id === shuttle._id)?.color ?? palette.nav : palette.nav;
+  const collecteColor = openCollecte ? allLines.find(item => item.id === openCollecte._id)?.color ?? palette.nav : palette.nav;
+
+  // Changement de filtre : cadrage sur les trajets affichés.
+  const firstLayer = useRef(true);
+  useEffect(() => {
+    if (firstLayer.current) { firstLayer.current = false; return; }
+    const map = mapRef.current;
+    if (!map || navMode || !overviewLines.length) return;
+    const bounds = new mapboxgl.LngLatBounds();
+    overviewLines.forEach(item => item.line.forEach(point => bounds.extend(point)));
+    map.fitBounds(bounds, { padding: pad(80), maxZoom: 12, duration: 700 });
+  }, [layer]);
+
+  // Tournée de collecte ouverte : tracé en surbrillance, arrêts numérotés, cadrage.
+  const collecteMarkers = useRef<mapboxgl.Marker[]>([]);
+  useEffect(() => {
+    const map = mapRef.current;
+    collecteMarkers.current.forEach(marker => marker.remove());
+    collecteMarkers.current = [];
+    if (!ready || !map || navMode || !openCollecte) return;
+    const line = allLines.find(item => item.id === openCollecte._id)?.line ?? [];
+    const points: Array<{ at: LngLat; label: string; badge: string }> = [
+      ...(openCollecte.depot ? [{ at: openCollecte.depot, label: "Dépôt", badge: "D" }] : []),
+      ...openCollecte.stops.flatMap((stop, index) => stop.at ? [{ at: stop.at, label: stop.contactName ?? stop.address.split(",")[0], badge: String(index + 1) }] : []),
+    ];
+    collecteMarkers.current = points.map(point => {
+      const element = document.createElement("div");
+      element.className = "flex flex-col items-center gap-1";
+      if (detailed) {
+        const label = document.createElement("span");
+        label.className = "whitespace-nowrap rounded-full bg-zinc-950/85 px-2 py-0.5 text-[11px] font-bold text-white shadow-lg";
+        label.textContent = point.label;
+        element.append(label);
+      }
+      const badge = document.createElement("span");
+      badge.className = "flex h-7 w-7 items-center justify-center rounded-full border-2 border-white text-xs font-bold text-white shadow-lg";
+      badge.style.backgroundColor = point.badge === "D" ? "#059669" : collecteColor;
+      badge.textContent = point.badge;
+      element.append(badge);
+      return new mapboxgl.Marker({ element, anchor: "bottom" }).setLngLat(point.at).addTo(map);
+    });
+    const bounds = new mapboxgl.LngLatBounds();
+    [...line, ...points.map(point => point.at)].forEach(point => bounds.extend(point));
+    if (!bounds.isEmpty()) map.fitBounds(bounds, { padding: { ...pad(70), right: 360 }, maxZoom: 13, duration: 900 });
+  }, [ready, openCollecte?._id, navMode, detailed, collecteColor, allLines.length]);
 
   // Tracé de navigation et cadrage sur la tournée.
   useEffect(() => {
@@ -399,7 +495,11 @@ export function LogisticsMap({ requests, selected, place, onPlace, isDark, shutt
     if (!map || !source) return;
     const [fromName, toName] = selectedKey ? selectedKey.split("|") : [];
     const from = fromName ? coords[fromName] : undefined; const to = toName ? coords[toName] : undefined;
-    if (!from) { source.setData(emptyCollection); return; }
+    if (!from) {
+      const line = openCollecte && !navMode ? allLines.find(item => item.id === openCollecte._id)?.line : undefined;
+      source.setData(line && line.length > 1 ? { type: "FeatureCollection", features: [lineFeature(line, { color: collecteColor })] } : emptyCollection);
+      return;
+    }
     if (!to || fromName === toName) { source.setData(emptyCollection); map.flyTo({ center: from, zoom: 13, duration: 900 }); return; }
     let cancelled = false;
     void road(from, to).then(line => {
@@ -409,26 +509,33 @@ export function LogisticsMap({ requests, selected, place, onPlace, isDark, shutt
       map.fitBounds(bounds, { padding: pad(90), maxZoom: 13, duration: 900 });
     });
     return () => { cancelled = true; };
-  }, [ready, selectedKey, coords, palette]);
+  }, [ready, selectedKey, coords, palette, openCollecte?._id, navMode, collecteColor, allLines]);
 
   if (!TOKEN) return <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-sm text-zinc-500"><MapPinOff size={28} />Carte indisponible : VITE_MAPBOX_ACCESS_TOKEN manquant.</div>;
   return <div className="absolute inset-0">
     <div ref={container} className="h-full w-full" />
     {chooser && !navMode && <div role="menu" aria-label="Navettes à cet endroit" className="absolute z-10 w-64 overflow-hidden rounded-2xl border border-[var(--crm-border)] bg-[var(--crm-surface)] text-sm text-zinc-100 shadow-2xl"
       style={{ left: Math.max(8, chooser.x - 128), top: chooser.y + 14 }}>
-      <p className="border-b border-[var(--crm-border)] px-3 py-2 text-xs font-semibold text-zinc-400">{chooser.items.length} navettes passent ici · laquelle ouvrir ?</p>
+      <p className="border-b border-[var(--crm-border)] px-3 py-2 text-xs font-semibold text-zinc-400">{chooser.items.length} trajets passent ici · lequel ouvrir ?</p>
       <ul className="max-h-64 overflow-y-auto p-1">
-        {chooser.items.map(item => <li key={item.id}><button type="button" role="menuitem" onClick={() => { setChooser(null); onOpenShuttle?.(item.id); }} className="flex w-full items-center gap-2.5 rounded-xl px-2.5 py-2 text-left hover:bg-[var(--crm-surface-2)]">
+        {chooser.items.map(item => <li key={item.id}><button type="button" role="menuitem" onClick={() => openLine(item)} className="flex w-full items-center gap-2.5 rounded-xl px-2.5 py-2 text-left hover:bg-[var(--crm-surface-2)]">
           <span className="h-1 w-6 shrink-0 rounded-full" style={{ backgroundColor: item.color }} />
           <span className="min-w-0 flex-1 truncate font-semibold">{item.name}</span>
-          <span className="shrink-0 text-[11px] text-zinc-500">{item.status === "en_route" ? "En route" : "À venir"}</span>
+          <span className="shrink-0 text-[11px] text-zinc-500">{item.kind === "collecte" ? "Collecte · " : ""}{item.status === "en_route" ? "En route" : "À venir"}</span>
         </button></li>)}
       </ul>
     </div>}
+    {!navMode && <div role="tablist" aria-label="Trajets affichés" className="absolute left-3 top-3 z-10 flex flex-wrap gap-2 lg:left-[var(--chips-left)]" style={{ ["--chips-left" as string]: `${leftInset + 12}px` }}>
+      {([["tout", "Tout", null, allLines.length], ["navettes", "Navettes", Truck, shuttleLines.length], ["collectes", "Collectes", Recycle, collecteLines.length]] as const).map(([key, label, Icon, count]) => <button key={key} type="button" role="tab" aria-selected={layer === key} onClick={() => setLayer(key)}
+        className={`flex items-center gap-1.5 rounded-full px-3.5 py-1.5 text-sm font-semibold shadow-lg transition-colors ${layer === key ? "bg-zinc-900 text-white ring-2 ring-white/70" : "bg-white text-zinc-800 hover:bg-zinc-100"}`}>
+        {Icon && <Icon size={14} />}{label}<span className={`rounded-full px-1.5 text-[11px] tabular-nums ${layer === key ? "bg-white/20" : "bg-zinc-200"}`}>{count}</span>
+      </button>)}
+    </div>}
+    {!navMode && openCollecte && <CollectePanel collecte={openCollecte} color={collecteColor} onClose={() => setOpenCollecteId(null)} />}
     {navMode && shuttle && (shuttle.trip ? <TripPanel trip={shuttle.trip} /> : <NavPanel shuttle={shuttle} plan={plan} planning={planning} error={planError} />)}
     {!navMode && <div className="pointer-events-none absolute bottom-3 right-14 flex flex-wrap justify-end gap-2 text-[11px] font-semibold">
       {overviewLines.length > 0
-        ? <><span className="flex items-center gap-1.5 rounded-full bg-black/70 px-2.5 py-1 text-white"><span className="h-0.5 w-5 bg-white" />En route</span><span className="flex items-center gap-1.5 rounded-full bg-black/70 px-2.5 py-1 text-white"><span className="w-5 border-t-2 border-dashed border-white" />À venir</span><span className="rounded-full bg-black/70 px-2.5 py-1 text-white">Une couleur par navette · cliquez un tracé</span></>
+        ? <><span className="flex items-center gap-1.5 rounded-full bg-black/70 px-2.5 py-1 text-white"><span className="h-0.5 w-5 bg-white" />En route</span><span className="flex items-center gap-1.5 rounded-full bg-black/70 px-2.5 py-1 text-white"><span className="w-5 border-t-2 border-dashed border-white" />À venir</span><span className="rounded-full bg-black/70 px-2.5 py-1 text-white">Une couleur par trajet · cliquez un tracé</span></>
         : [[palette.onSite, "À expédier"], [palette.transit, "En transit"], [palette.selected, "Sélection"]].map(([color, label]) => <span key={label} className="flex items-center gap-1.5 rounded-full bg-black/70 px-2.5 py-1 text-white"><span className="h-2 w-4 rounded-full" style={{ backgroundColor: color }} />{label}</span>)}
     </div>}
   </div>;
@@ -444,6 +551,37 @@ function TripPanel({ trip }: { trip: NonNullable<Shuttle["trip"]> }) {
   return <div className="absolute right-3 top-16 w-[300px] max-w-[calc(100%-1rem)] rounded-2xl border border-[var(--crm-border)] bg-[color:color-mix(in_srgb,var(--crm-surface)_94%,transparent)] px-4 py-3 text-sm text-zinc-100 shadow-2xl backdrop-blur">
     <p className="flex items-center gap-1.5 text-base font-bold"><Clock size={15} />{slot}</p>
     {trip.purpose && <p className="mt-1 text-xs text-zinc-400">Motif : <span className="text-zinc-200">{trip.purpose}</span></p>}
+  </div>;
+}
+
+/** Tournée de collecte Recycapp : date, équipe, arrêts dans l'ordre. */
+function CollectePanel({ collecte, color, onClose }: { collecte: Collecte; color: string; onClose: () => void }) {
+  const date = new Date(collecte.date);
+  const facts = [collecte.driverName, collecte.vehicleName, collecte.distanceMeters ? `${Math.round(collecte.distanceMeters / 1000)} km` : null, collecte.durationSeconds ? duration(collecte.durationSeconds) : null].filter(Boolean);
+  return <div className="absolute right-3 top-16 flex max-h-[calc(100%-5rem)] w-[320px] max-w-[calc(100%-1rem)] flex-col overflow-hidden rounded-2xl border border-[var(--crm-border)] bg-[color:color-mix(in_srgb,var(--crm-surface)_94%,transparent)] text-sm text-zinc-100 shadow-2xl backdrop-blur">
+    <div className="flex items-start gap-2 border-b border-[var(--crm-border)] px-4 py-3">
+      <span className="mt-1.5 h-1.5 w-6 shrink-0 rounded-full" style={{ backgroundColor: color }} />
+      <div className="min-w-0 flex-1">
+        <p className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-zinc-400"><Recycle size={13} />Collecte Recycapp · {collecte.status === "en_cours" ? "en cours" : "à venir"}</p>
+        <p className="truncate text-base font-bold">{collecte.label || "Tournée de collecte"}</p>
+        <p className="text-xs capitalize text-zinc-400">{dayLabel(date)}</p>
+        {facts.length > 0 && <p className="mt-0.5 text-xs text-zinc-300">{facts.join(" · ")}</p>}
+      </div>
+      <button type="button" onClick={onClose} aria-label="Fermer" className="rounded-lg p-1 text-zinc-400 hover:bg-[var(--crm-surface-2)] hover:text-zinc-100"><X size={16} /></button>
+    </div>
+    <ol className="min-h-0 flex-1 space-y-1 overflow-y-auto p-3">
+      {collecte.depotAddress && <li className="flex gap-2.5 rounded-xl px-2 py-1.5"><span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-emerald-600 text-[11px] font-bold text-white">D</span><span className="min-w-0 text-xs text-zinc-300">{collecte.depotAddress}</span></li>}
+      {collecte.stops.map((stop, index) => <li key={`${stop.order}-${index}`} className="flex gap-2.5 rounded-xl px-2 py-1.5">
+        <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[11px] font-bold text-white" style={{ backgroundColor: color }}>{index + 1}</span>
+        <span className="min-w-0">
+          {stop.contactName && <span className="block truncate font-semibold">{stop.contactName}</span>}
+          <span className="block text-xs text-zinc-400">{stop.address}</span>
+          {stop.status === "effectue" && <span className="text-[11px] font-semibold text-green-500">Effectuée</span>}
+          {!stop.at && <span className="text-[11px] text-amber-500">Adresse non localisée</span>}
+        </span>
+      </li>)}
+      {collecte.stops.length === 0 && <li className="px-2 py-1.5 text-xs text-zinc-500">Aucun arrêt.</li>}
+    </ol>
   </div>;
 }
 
