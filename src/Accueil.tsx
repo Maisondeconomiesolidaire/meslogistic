@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, type DragEvent, type ReactNode } from "react";
 import { useMutation, useQuery } from "convex/react";
-import { AlertTriangle, ArrowLeft, ArrowRight, Bus, CalendarClock, CalendarDays, CarFront, Check, ChevronLeft, ChevronRight, ClipboardCheck, ExternalLink, GripVertical, Layers, Map as MapIcon, MapPin, PackageCheck, Plus, Printer, Recycle, Search, Send, Trash2, Truck, Undo2, X } from "lucide-react";
+import { AlertTriangle, QrCode, ArrowLeft, ArrowRight, Bus, CalendarClock, CalendarDays, CarFront, Check, ChevronLeft, ChevronRight, ClipboardCheck, ExternalLink, GripVertical, Layers, Map as MapIcon, MapPin, PackageCheck, Plus, Printer, Recycle, Search, Send, Trash2, Truck, Undo2, X } from "lucide-react";
 import { api } from "../convex/_generated/api";
 import type { Id } from "../convex/_generated/dataModel";
 import { Thumb, TRANSIT_COLOR, shortDate } from "./components/crm/LogisticsCard";
@@ -16,6 +16,7 @@ import { LogisticsMap, SELECTED_COLOR, currentShuttles, locate, type Collecte, t
 import { CollecteCard } from "./CollecteCard";
 import { suggestOnRoute, type NavPlan, type RouteSuggestion } from "./shuttleRoute";
 import { printShuttle } from "./shuttlePrint";
+import { DriverPicker, ShuttleQr } from "./ShuttleDriver";
 
 type Status = Shuttle["status"];
 /** Ville d'arrivée d'une collecte, pour les pastilles du calendrier. */
@@ -351,6 +352,7 @@ function ShuttleInline({ shuttle, canUpdate, dragging, dropActive, dropProps, on
   const deleteShuttle = useMutation(api.meslogisticShuttles.deleteShuttle);
   const cancelDeparture = useMutation(api.meslogisticShuttles.cancelDeparture);
   const confirmProposals = useMutation(api.meslogisticShuttles.confirmProposals);
+  const finalize = useMutation(api.meslogisticShuttles.finalizeShuttle);
   const [busy, setBusy] = useState(false);
   const [confirm, setConfirm] = useState<Confirm | null>(null);
   const planned = shuttle.status === "planifiee";
@@ -371,6 +373,12 @@ function ShuttleInline({ shuttle, canUpdate, dragging, dropActive, dropProps, on
       body: <><p>{shuttle.driverName ?? "Le conducteur"} recevra un e-mail et une notification dans Mes Outils lui proposant de transporter {drafts.length > 1 ? `ces ${objets(drafts.length)}` : "cet objet"} pendant son trajet. Il ou elle pourra accepter ou refuser chaque objet depuis la page Navettes.</p><ObjectList rows={drafts} /></>,
       action: () => confirmProposals({ shuttleId: shuttle._id }),
     })}><Send size={14} />Confirmer ({drafts.length})</Button>}
+    {total > drafts.length && <Button size="sm" variant={shuttle.finalizedAt ? "secondary" : "primary"} disabled={busy || (!shuttle.fromReservation && !shuttle.driverName)}
+      title={!shuttle.fromReservation && !shuttle.driverName ? "Assignez d'abord un conducteur" : "Envoie au conducteur le QR code de sa page de ramassage"} onClick={() => setConfirm({
+      title: shuttle.finalizedAt ? "Renvoyer le QR code ?" : "Finaliser la navette ?", confirmLabel: shuttle.finalizedAt ? "Renvoyer" : "Finaliser et envoyer", icon: <QrCode size={15} />,
+      body: <><p>{shuttle.driverName ?? "Le conducteur"} recevra par e-mail le QR code de la navette. En le scannant, il ou elle ouvre la liste des objets à récupérer et les coche au fur et à mesure.</p>{shuttle.transits.some(row => row.driverDecision === "proposee") && <p className="mt-2 text-amber-500">Les objets encore en attente de sa réponse ne figurent pas dans la liste.</p>}</>,
+      action: () => finalize({ shuttleId: shuttle._id }),
+    })}><QrCode size={14} />{shuttle.finalizedAt ? "Renvoyer le QR" : "Finaliser"}</Button>}
     {total > 0 && loaded < total && <Button size="sm" variant="secondary" disabled={busy} onClick={() => setConfirm({
       title: "Les produits ont bien été chargés ?", confirmLabel: "Oui, tout est chargé", icon: <Check size={15} />,
       body: <><p>Confirmez que les {objets(total)} de « {shuttle.name} » sont bien dans le véhicule.</p><ObjectList rows={shuttle.transits} /></>,
@@ -403,7 +411,7 @@ function ShuttleInline({ shuttle, canUpdate, dragging, dropActive, dropProps, on
       <div className="min-w-0">
         <p className="flex items-center gap-2 text-lg font-bold"><Bus size={18} />{shuttle.name}<span className="rounded-full px-2.5 py-0.5 text-xs font-semibold text-zinc-950" style={{ backgroundColor: STATUS[shuttle.status].color }}>{SHUTTLE_LABEL[shuttle.status]}</span></p>
         <p className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-zinc-400"><span className="flex items-center gap-1 capitalize"><CalendarClock size={13} />{longDate(shuttle.scheduledDate)}</span>{shuttle.origin && <span className="flex items-center gap-1"><MapPin size={13} />{shortLocation(shuttle.origin)}{shuttle.destination ? <><ArrowRight size={12} />{shortLocation(shuttle.destination)}</> : null}</span>}<Stops stops={stopsOf(shuttle.transits)} className="font-semibold text-zinc-300" /></p>
-        {shuttle.driverName && <p className="mt-1 flex items-center gap-1.5 text-xs font-semibold text-zinc-300"><CarFront size={13} />Réservation véhicule de {shuttle.driverName}{shuttle.vehicleName ? ` · ${shuttle.vehicleName}` : ""}</p>}
+        {shuttle.fromReservation && shuttle.driverName && <p className="mt-1 flex items-center gap-1.5 text-xs font-semibold text-zinc-300"><CarFront size={13} />Réservation véhicule de {shuttle.driverName}{shuttle.vehicleName ? ` · ${shuttle.vehicleName}` : ""}</p>}
       </div>
       {planned && total > 0 && <span className={`flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold ${loaded === total ? "bg-green-500/15 text-green-500" : "bg-amber-500/15 text-amber-500"}`}><ClipboardCheck size={14} />{loaded}/{objets(total)} chargé{loaded > 1 ? "s" : ""}</span>}
       <div className="ml-auto flex flex-wrap gap-2">
@@ -416,6 +424,10 @@ function ShuttleInline({ shuttle, canUpdate, dragging, dropActive, dropProps, on
         })}><Trash2 size={14} />Supprimer</Button>}
       </div>
     </div>
+    {(!shuttle.fromReservation || shuttle.finalizedAt) && <div className="shrink-0 space-y-2 border-b border-[var(--crm-border)] px-4 py-2.5">
+      {!shuttle.fromReservation && <DriverPicker shuttle={shuttle} canUpdate={canUpdate} onError={onError} />}
+      <ShuttleQr shuttle={shuttle} />
+    </div>}
     <div className="min-h-0 flex-1 overflow-auto p-3">
       {planned && <OnRoute shuttle={shuttle} candidates={candidates} canUpdate={canUpdate} onSelectRequest={onSelectRequest} onError={onError} />}
       {planned && canUpdate && <div className={`mb-3 flex items-center justify-center gap-2 rounded-2xl border-2 border-dashed p-4 text-sm font-semibold transition-colors ${dropActive ? "border-brand-500 bg-brand-500/15 text-brand-500" : dragging ? "border-brand-500/60 text-brand-500" : "border-[var(--crm-border)] text-zinc-500"}`}><GripVertical size={16} />Glissez ici des demandes de la liste de gauche</div>}

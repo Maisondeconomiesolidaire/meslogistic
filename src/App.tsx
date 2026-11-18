@@ -7,12 +7,17 @@ import { api } from "../convex/_generated/api";
 import { AuthSwitch } from "./components/ui/auth-switch";
 import { FullSpinner } from "./components/ui/Spinner";
 import { ShuttleBoard } from "./ShuttleBoard";
+import { ScanPage } from "./ScanPage";
 const Accueil = lazy(() => import("./Accueil").then(module => ({ default: module.Accueil })));
 export default function App() {
   const location = useLocation();
   const auth = location.pathname === "/connexion" || location.pathname === "/inscription";
-  if (auth) return <AuthSwitch appName="Meslogistic" welcomeTitle="Le bon objet, au bon endroit." signinSubtitle="Connectez-vous pour suivre les navettes et déplacements Bâtire." redirectUrl="/" initialMode={location.pathname === "/inscription" ? "signup" : "signin"} homeHref="https://mesoutils.groupemes.fr" homeLabel="Mes Outils" />;
-  return <><SignedOut><Navigate to="/connexion" replace /></SignedOut><SignedIn><Workspace /></SignedIn></>;
+  if (auth) return <AuthSwitch appName="Meslogistic" welcomeTitle="Le bon objet, au bon endroit." signinSubtitle="Connectez-vous pour suivre les navettes et déplacements Bâtire." redirectUrl={new URLSearchParams(location.search).get("redirect_url") ?? "/"} initialMode={location.pathname === "/inscription" ? "signup" : "signin"} homeHref="https://mesoutils.groupemes.fr" homeLabel="Mes Outils" />;
+  const signIn = `/connexion?redirect_url=${encodeURIComponent(location.pathname + location.search)}`;
+  // Page de ramassage (QR code d'une navette) : plein écran, ouverte aussi au conducteur sans droits Meslogistic.
+  const scan = location.pathname.match(/^\/scan(?:\/([^/]+))?\/?$/);
+  if (scan) return <><SignedOut><Navigate to={signIn} replace /></SignedOut><SignedIn><ScanPage shuttleId={scan[1] ?? null} /></SignedIn></>;
+  return <><SignedOut><Navigate to={location.pathname === "/" ? "/connexion" : signIn} replace /></SignedOut><SignedIn><Workspace /></SignedIn></>;
 }
 function Workspace() {
   const { user } = useUser();
