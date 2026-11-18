@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "convex/react";
 import mapboxgl from "mapbox-gl";
 import "mapbox-gl/dist/mapbox-gl.css";
-import { Clock, Loader2, MapPinOff, Navigation, Recycle, Truck, X } from "lucide-react";
+import { Clock, Loader2, MapPinOff, Navigation } from "lucide-react";
 import { api } from "../convex/_generated/api";
 import { shortLocation, type Request } from "./Demandes";
 import { ON_SITE_COLOR, TRANSIT_COLOR } from "./components/crm/LogisticsCard";
@@ -124,8 +124,8 @@ function colorShuttles(items: Array<{ id: string; places: string[] }>) {
 type LineKind = "navette" | "collecte";
 type ShuttleChoice = { id: string; name: string; color: string; status: string; kind: LineKind };
 /** Filtre de la carte (pastilles en haut). */
-type Layer = "tout" | "navettes" | "collectes";
-type Collecte = NonNullable<ReturnType<typeof useQuery<typeof api.meslogisticShuttles.collectes>>>[number];
+export type Layer = "tout" | "navettes" | "collectes";
+export type Collecte = NonNullable<ReturnType<typeof useQuery<typeof api.meslogisticShuttles.collectes>>>[number];
 const pointKey = (at: LngLat) => `${at[0].toFixed(3)},${at[1].toFixed(3)}`;
 
 /** Tracé d'une collecte : celui calculé par Recycapp, sinon par la route depuis le dépôt (Solidarium) jusqu'au client ; une tournée GDR revient au dépôt. */
@@ -153,7 +153,7 @@ const lineFeature = (coordinates: LngLat[], properties: Record<string, unknown>)
  * départ) et le tracé routier de chaque liaison. Orange : objets en transit ;
  * bleu : objets à planifier. La demande sélectionnée est surlignée en violet.
  */
-export function LogisticsMap({ requests, selected, place, onPlace, isDark, shuttle, onPlan, shuttles = [], onOpenShuttle, leftInset = 0 }: {
+export function LogisticsMap({ requests, selected, place, onPlace, isDark, shuttle, onPlan, shuttles = [], onOpenShuttle, leftInset = 0, collectes, layer = "tout", openCollecteId = null, onOpenCollecte }: {
   requests: Request[]; selected?: Request | null; place: string | null; onPlace: (place: string | null) => void; isDark: boolean;
   /** Navette ouverte : la carte passe en mode navigation. */
   shuttle?: Shuttle | null;
@@ -165,6 +165,11 @@ export function LogisticsMap({ requests, selected, place, onPlace, isDark, shutt
   onOpenShuttle?: (id: string) => void;
   /** Largeur (px) des cartes flottantes à gauche : le cadrage les évite. */
   leftInset?: number;
+  /** Collectes Recycapp à venir, le filtre des pastilles et la collecte ouverte (gérés par l'accueil). */
+  collectes?: Collecte[];
+  layer?: Layer;
+  openCollecteId?: string | null;
+  onOpenCollecte?: (id: string | null) => void;
 }) {
   const insetRef = useRef(leftInset);
   insetRef.current = leftInset;
@@ -242,7 +247,6 @@ export function LogisticsMap({ requests, selected, place, onPlace, isDark, shutt
   }, [overviewKey]);
 
   // Tournées de collecte Recycapp à venir ou en cours.
-  const collectes = useQuery(api.meslogisticShuttles.collectes);
   const collectesKey = (collectes ?? []).map(item => `${item._id}:${item.status}:${item.stops.map(stop => stop.at ? pointKey(stop.at) : "").join(",")}:${item.route?.length ?? 0}`).join("§");
   const collectesRef = useRef(collectes);
   collectesRef.current = collectes;
@@ -254,7 +258,7 @@ export function LogisticsMap({ requests, selected, place, onPlace, isDark, shutt
       .then(results => {
         if (cancelled) return;
         // Une tournée en cours est tracée en plein, comme une navette en route.
-        setCollecteLines(results.flatMap(({ item, route }) => route ? [{ id: item._id as string, name: item.label || "Collecte", status: item.status === "en_cours" ? "en_route" : "planifiee", line: route.line, places: route.places, stops: route.stops }] : []));
+        setCollecteLines(results.flatMap(({ item, route }) => route ? [{ id: item._id as string, name: `Collecte → ${((item.stops[0]?.address ?? "").match(/\d{5}\s+(.+)$/)?.[1] ?? (item.stops[0]?.address ?? "").split(",").pop() ?? "").trim() || "client"}`, status: item.status === "en_cours" ? "en_route" : "planifiee", line: route.line, places: route.places, stops: route.stops }] : []));
       });
     return () => { cancelled = true; };
   }, [collectesKey]);
@@ -265,13 +269,9 @@ export function LogisticsMap({ requests, selected, place, onPlace, isDark, shutt
     const colors = colorShuttles(items.map(item => ({ id: item.id, places: item.places.map(place => item.kind === "navette" ? place : `@${place}`) })));
     return items.map(item => ({ ...item, color: colors.get(item.id)! }));
   }, [shuttleLines, collecteLines]);
-  const [layer, setLayer] = useState<Layer>("tout");
   const overviewLines = useMemo(() => allLines.filter(item => layer === "tout" || (layer === "navettes" ? item.kind === "navette" : item.kind === "collecte")), [allLines, layer]);
   // Tournée de collecte ouverte (clic sur son tracé).
-  const [openCollecteId, setOpenCollecteId] = useState<string | null>(null);
   const openCollecte = collectes?.find(item => item._id === openCollecteId) ?? null;
-  useEffect(() => { if (shuttle) setOpenCollecteId(null); }, [shuttle]);
-  useEffect(() => { if (openCollecteId && collectes && !collectes.some(item => item._id === openCollecteId)) setOpenCollecteId(null); }, [collectes, openCollecteId]);
   // Niveau de détail selon le zoom : vue d'ensemble compacte, détails en zoomant.
   const [detailed, setDetailed] = useState(false);
   // Plusieurs navettes au même endroit : liste pour choisir laquelle ouvrir.
@@ -279,7 +279,7 @@ export function LogisticsMap({ requests, selected, place, onPlace, isDark, shutt
   useEffect(() => { if (navMode) setChooser(null); }, [navMode]);
   const onOpenShuttleRef = useRef(onOpenShuttle);
   onOpenShuttleRef.current = onOpenShuttle;
-  const openLine = (item: ShuttleChoice) => { setChooser(null); if (item.kind === "collecte") setOpenCollecteId(item.id); else { setOpenCollecteId(null); onOpenShuttle?.(item.id); } };
+  const openLine = (item: ShuttleChoice) => { setChooser(null); if (item.kind === "collecte") onOpenCollecte?.(item.id); else onOpenShuttle?.(item.id); };
   const openLineRef = useRef(openLine);
   openLineRef.current = openLine;
 
@@ -405,7 +405,7 @@ export function LogisticsMap({ requests, selected, place, onPlace, isDark, shutt
       type: "FeatureCollection",
       features: navMode ? [] : overviewLines.filter(item => item.kind === "collecte").flatMap(item => {
         const end = [...(collecteLines.find(line => line.id === item.id)?.stops ?? [])].reverse().find((at): at is LngLat => Boolean(at)) ?? item.line[item.line.length - 1];
-        return end ? [{ type: "Feature" as const, properties: { id: item.id, name: item.name.replace(/^Collecte /, ""), color: item.color, kind: "collecte", status: item.status }, geometry: { type: "Point" as const, coordinates: end } }] : [];
+        return end ? [{ type: "Feature" as const, properties: { id: item.id, name: item.name.replace(/^Collecte → /, ""), color: item.color, kind: "collecte", status: item.status }, geometry: { type: "Point" as const, coordinates: end } }] : [];
       }),
     });
   }, [ready, overviewLines, navMode, palette, collecteLines]);
@@ -454,7 +454,7 @@ export function LogisticsMap({ requests, selected, place, onPlace, isDark, shutt
     });
     const bounds = new mapboxgl.LngLatBounds();
     [...line, ...points.map(point => point.at)].forEach(point => bounds.extend(point));
-    if (!bounds.isEmpty()) map.fitBounds(bounds, { padding: { ...pad(70), right: 360 }, maxZoom: 13, duration: 900 });
+    if (!bounds.isEmpty()) map.fitBounds(bounds, { padding: pad(80), maxZoom: 13, duration: 900 });
   }, [ready, openCollecte?._id, navMode, detailed, collecteColor, allLines.length, collecteLines]);
 
   // Tracé de navigation et cadrage sur la tournée.
@@ -559,13 +559,6 @@ export function LogisticsMap({ requests, selected, place, onPlace, isDark, shutt
         </button></li>)}
       </ul>
     </div>}
-    {!navMode && <div role="tablist" aria-label="Trajets affichés" className="absolute left-3 top-3 z-10 flex flex-wrap gap-2 lg:left-[var(--chips-left)]" style={{ ["--chips-left" as string]: `${leftInset + 12}px` }}>
-      {([["tout", "Tout", null, allLines.length], ["navettes", "Navettes", Truck, shuttleLines.length], ["collectes", "Collectes", Recycle, collecteLines.length]] as const).map(([key, label, Icon, count]) => <button key={key} type="button" role="tab" aria-selected={layer === key} onClick={() => setLayer(key)}
-        className={`flex items-center gap-1.5 rounded-full px-3.5 py-1.5 text-sm font-semibold shadow-lg transition-colors ${layer === key ? "bg-zinc-900 text-white ring-2 ring-white/70" : "bg-white text-zinc-800 hover:bg-zinc-100"}`}>
-        {Icon && <Icon size={14} />}{label}<span className={`rounded-full px-1.5 text-[11px] tabular-nums ${layer === key ? "bg-white/20" : "bg-zinc-200"}`}>{count}</span>
-      </button>)}
-    </div>}
-    {!navMode && openCollecte && <CollectePanel collecte={openCollecte} color={collecteColor} located={collecteLines.find(item => item.id === openCollecte._id)?.stops} onClose={() => setOpenCollecteId(null)} />}
     {navMode && shuttle && (shuttle.trip ? <TripPanel trip={shuttle.trip} /> : <NavPanel shuttle={shuttle} plan={plan} planning={planning} error={planError} />)}
     {!navMode && <div className="pointer-events-none absolute bottom-3 right-14 flex flex-wrap justify-end gap-2 text-[11px] font-semibold">
       {overviewLines.length > 0
@@ -585,37 +578,6 @@ function TripPanel({ trip }: { trip: NonNullable<Shuttle["trip"]> }) {
   return <div className="absolute right-3 top-16 w-[300px] max-w-[calc(100%-1rem)] rounded-2xl border border-[var(--crm-border)] bg-[color:color-mix(in_srgb,var(--crm-surface)_94%,transparent)] px-4 py-3 text-sm text-zinc-100 shadow-2xl backdrop-blur">
     <p className="flex items-center gap-1.5 text-base font-bold"><Clock size={15} />{slot}</p>
     {trip.purpose && <p className="mt-1 text-xs text-zinc-400">Motif : <span className="text-zinc-200">{trip.purpose}</span></p>}
-  </div>;
-}
-
-/** Tournée de collecte Recycapp : date, équipe, arrêts dans l'ordre. */
-function CollectePanel({ collecte, color, located, onClose }: { collecte: Collecte; color: string; located?: Array<LngLat | null>; onClose: () => void }) {
-  const date = new Date(collecte.date);
-  const facts = [collecte.driverName, collecte.vehicleName, collecte.distanceMeters ? `${Math.round(collecte.distanceMeters / 1000)} km` : null, collecte.durationSeconds ? duration(collecte.durationSeconds) : null].filter(Boolean);
-  return <div className="absolute right-3 top-16 flex max-h-[calc(100%-5rem)] w-[320px] max-w-[calc(100%-1rem)] flex-col overflow-hidden rounded-2xl border border-[var(--crm-border)] bg-[color:color-mix(in_srgb,var(--crm-surface)_94%,transparent)] text-sm text-zinc-100 shadow-2xl backdrop-blur">
-    <div className="flex items-start gap-2 border-b border-[var(--crm-border)] px-4 py-3">
-      <span className="mt-1.5 h-1.5 w-6 shrink-0 rounded-full" style={{ backgroundColor: color }} />
-      <div className="min-w-0 flex-1">
-        <p className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-zinc-400"><Recycle size={13} />Recycapp · {collecte.stops.length > 1 ? `${collecte.stops.length} collectes` : "collecte"} · {collecte.status === "en_cours" ? "en cours" : "à venir"}</p>
-        <p className="truncate text-base font-bold">{collecte.label || "Tournée de collecte"}</p>
-        <p className="text-xs capitalize text-zinc-400">{dayLabel(date)}</p>
-        {facts.length > 0 && <p className="mt-0.5 text-xs text-zinc-300">{facts.join(" · ")}</p>}
-      </div>
-      <button type="button" onClick={onClose} aria-label="Fermer" className="rounded-lg p-1 text-zinc-400 hover:bg-[var(--crm-surface-2)] hover:text-zinc-100"><X size={16} /></button>
-    </div>
-    <ol className="min-h-0 flex-1 space-y-1 overflow-y-auto p-3">
-      {collecte.depotAddress && <li className="flex gap-2.5 rounded-xl px-2 py-1.5"><span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-emerald-600 text-[11px] font-bold text-white">D</span><span className="min-w-0 text-xs text-zinc-300">{collecte.depotAddress}</span></li>}
-      {collecte.stops.map((stop, index) => <li key={`${stop.order}-${index}`} className="flex gap-2.5 rounded-xl px-2 py-1.5">
-        <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[11px] font-bold text-white" style={{ backgroundColor: color }}>{index + 1}</span>
-        <span className="min-w-0">
-          {(stop.contactName || stop.time) && <span className="block truncate font-semibold">{stop.time ? `${time(new Date(stop.time))} · ` : ""}{stop.contactName}{stop.reference ? <span className="font-normal text-zinc-500"> · {stop.reference}</span> : null}</span>}
-          <span className="block text-xs text-zinc-400">{stop.address}</span>
-          {stop.status === "effectue" && <span className="text-[11px] font-semibold text-green-500">Effectuée</span>}
-          {located && !stop.at && !located[index] && <span className="text-[11px] text-amber-500">Adresse non localisée</span>}
-        </span>
-      </li>)}
-      {collecte.stops.length === 0 && <li className="px-2 py-1.5 text-xs text-zinc-500">Aucun arrêt.</li>}
-    </ol>
   </div>;
 }
 

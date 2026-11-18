@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, type DragEvent, type ReactNode } from "react";
 import { useMutation, useQuery } from "convex/react";
-import { AlertTriangle, ArrowLeft, ArrowRight, Bus, CalendarClock, CalendarDays, CarFront, Check, ChevronLeft, ChevronRight, ClipboardCheck, ExternalLink, GripVertical, Map as MapIcon, MapPin, PackageCheck, Plus, Printer, Search, Send, Trash2, Truck, Undo2, X } from "lucide-react";
+import { AlertTriangle, ArrowLeft, ArrowRight, Bus, CalendarClock, CalendarDays, CarFront, Check, ChevronLeft, ChevronRight, ClipboardCheck, ExternalLink, GripVertical, Layers, Map as MapIcon, MapPin, PackageCheck, Plus, Printer, Recycle, Search, Send, Trash2, Truck, Undo2, X } from "lucide-react";
 import { api } from "../convex/_generated/api";
 import type { Id } from "../convex/_generated/dataModel";
 import { Thumb, TRANSIT_COLOR, shortDate } from "./components/crm/LogisticsCard";
@@ -12,11 +12,19 @@ import { SlotTag } from "./StorageSlot";
 import { ArticlePreview, RequestDetail } from "./RequestDetail";
 import { CARD_COLOR, NewShuttle, STATUS, Stops, errorText, stopsOf, type Shuttle } from "./ShuttleBoard";
 import { today } from "./TransferPlanning";
-import { LogisticsMap, SELECTED_COLOR, locate } from "./LogisticsMap";
+import { LogisticsMap, SELECTED_COLOR, currentShuttles, locate, type Collecte, type Layer } from "./LogisticsMap";
+import { CollecteCard } from "./CollecteCard";
 import { suggestOnRoute, type NavPlan, type RouteSuggestion } from "./shuttleRoute";
 import { printShuttle } from "./shuttlePrint";
 
 type Status = Shuttle["status"];
+/** Ville d'arrivée d'une collecte, pour les pastilles du calendrier. */
+function collecteCity(collecte: Collecte) {
+  const address = collecte.stops[0]?.address ?? "";
+  const match = address.match(/\d{5}\s+(.+)$/);
+  return (match?.[1] ?? address.split(",").pop() ?? "").trim() || "client";
+}
+
 /** Libellés de la page d'accueil, comme sur le kanban des navettes. */
 const SHUTTLE_LABEL: Record<Status, string> = { planifiee: "Nouveau", en_route: "En transit", terminee: "Terminée" };
 const DRAG_TYPE = "application/x-meslogistic-request";
@@ -40,6 +48,10 @@ export function Accueil({ canCreate, canUpdate, isDark }: { canCreate: boolean; 
   const [openShuttleId, setOpenShuttleId] = useState<string | null>(null);
   const [navPlan, setNavPlan] = useState<NavPlan | null>(null);
   const [tab, setTab] = useState<"carte" | "calendrier">("carte");
+  // Pastilles Tout / Navettes / Collectes, communes à la carte et au calendrier.
+  const [layer, setLayer] = useState<Layer>("tout");
+  const collectes = useQuery(api.meslogisticShuttles.collectes, {});
+  const [openCollecteId, setOpenCollecteId] = useState<string | null>(null);
   const onPlace = useCallback((next: string | null) => setPlace(next), []);
 
   const active = useMemo(() => (requests ?? [])
@@ -59,12 +71,15 @@ export function Accueil({ canCreate, canUpdate, isDark }: { canCreate: boolean; 
   const shuttleName = (id?: string) => board.shuttles.find(shuttle => shuttle._id === id)?.name;
 
   const openShuttle = board.shuttles.find(shuttle => shuttle._id === openShuttleId) ?? null;
+  const openCollecte = openShuttle ? null : collectes?.find(item => item._id === openCollecteId) ?? null;
+  const openCollecteFrom = (id: string | null) => { setOpenCollecteId(id); if (id) { setOpenShuttleId(null); setSelectedId(null); setTab("carte"); } };
+  const layerCounts: Record<Layer, number> = { navettes: currentShuttles(board.shuttles).length, collectes: collectes?.length ?? 0, tout: currentShuttles(board.shuttles).length + (collectes?.length ?? 0) };
   const candidates = active.filter(request => request.status === "a_preparer" && !request.shuttleId);
   // Deuxième carte flottante : la demande choisie, sinon la navette ouverte (carte seulement).
-  const second: "request" | "shuttle" | null = selected ? "request" : openShuttle && tab === "carte" ? "shuttle" : null;
-  const secondWidth = second === "request" ? 380 : second === "shuttle" ? 460 : 0;
+  const second: "request" | "shuttle" | "collecte" | null = selected ? "request" : openShuttle && tab === "carte" ? "shuttle" : openCollecte && tab === "carte" ? "collecte" : null;
+  const secondWidth = second === "request" ? 380 : second === "shuttle" ? 460 : second === "collecte" ? 380 : 0;
   const leftInset = 352 + (second ? secondWidth + 12 : 0);
-  const openFromCalendar = (id: string | null) => { setOpenShuttleId(id); if (id) { setSelectedId(null); setTab("carte"); } };
+  const openFromCalendar = (id: string | null) => { setOpenShuttleId(id); if (id) { setSelectedId(null); setOpenCollecteId(null); setTab("carte"); } };
   const card = "overflow-hidden rounded-3xl border border-[var(--crm-border)] bg-[var(--crm-surface)] shadow-2xl";
 
   return <div className="relative flex h-[calc(100dvh-3.5rem)] flex-col gap-3 overflow-y-auto p-3 lg:block lg:h-dvh lg:overflow-hidden lg:p-0">
@@ -74,12 +89,21 @@ export function Accueil({ canCreate, canUpdate, isDark }: { canCreate: boolean; 
         className={`flex items-center gap-1.5 rounded-full px-4 py-1.5 transition-colors ${tab === key ? "bg-brand-500 text-white" : "text-zinc-400 hover:text-zinc-100"}`}><Icon size={15} />{label}</button>)}
     </div>
 
+    {/* Pastilles : quels trajets afficher, sur la carte comme dans le calendrier */}
+    <div role="tablist" aria-label="Trajets affichés" className="z-20 flex w-fit flex-wrap rounded-full border border-[var(--crm-border)] bg-[var(--crm-surface)] p-1 text-sm font-semibold shadow-xl lg:absolute lg:top-3 lg:left-[var(--chips-left)]" style={{ ["--chips-left" as string]: `${leftInset + 12}px` }}>
+      {([["tout", "Tout", Layers], ["navettes", "Navettes", Truck], ["collectes", "Collectes", Recycle]] as const).map(([key, label, Icon]) => <button key={key} type="button" role="tab" aria-selected={layer === key} onClick={() => setLayer(key)}
+        className={`flex items-center gap-1.5 rounded-full px-3.5 py-1.5 transition-colors ${layer === key ? "bg-brand-500 text-white" : "text-zinc-400 hover:text-zinc-100"}`}>
+        <Icon size={14} />{label}<span className={`rounded-full px-1.5 text-[11px] tabular-nums ${layer === key ? "bg-white/25" : "bg-[var(--crm-surface-2)]"}`}>{layerCounts[key]}</span>
+      </button>)}
+    </div>
+
     {/* Fond : la carte en plein écran, ou le calendrier des navettes */}
     {tab === "carte" ? <section aria-label="Carte des navettes" className="relative min-h-[55vh] shrink-0 overflow-hidden rounded-3xl border border-[var(--crm-border)] bg-[var(--crm-surface)] lg:absolute lg:inset-0 lg:min-h-0 lg:rounded-none lg:border-0">
-      <LogisticsMap requests={active} selected={selected} place={place} onPlace={onPlace} isDark={isDark} shuttle={openShuttle} onPlan={setNavPlan} shuttles={board.shuttles} onOpenShuttle={id => { setSelectedId(null); setOpenShuttleId(id); }} leftInset={leftInset} />
+      <LogisticsMap requests={active} selected={selected} place={place} onPlace={onPlace} isDark={isDark} shuttle={openShuttle} onPlan={setNavPlan} shuttles={board.shuttles} onOpenShuttle={id => { setSelectedId(null); setOpenCollecteId(null); setOpenShuttleId(id); }} leftInset={leftInset}
+        collectes={collectes ?? []} layer={layer} openCollecteId={openCollecte?._id ?? null} onOpenCollecte={openCollecteFrom} />
     </section> : <div className="flex min-h-[520px] flex-col lg:absolute lg:bottom-3 lg:right-3 lg:top-16 lg:min-h-0" style={{ left: leftInset }}>
       <div className="flex min-h-0 flex-1 flex-col">
-        <ShuttleSection shuttles={board.shuttles} openId={null} setOpenId={openFromCalendar} dragging={dragging} canCreate={canCreate} canUpdate={canUpdate} onSelectRequest={id => setSelectedId(id)} selectedId={selectedId} navPlan={navPlan} candidates={candidates} />
+        <ShuttleSection shuttles={board.shuttles} openId={null} setOpenId={openFromCalendar} dragging={dragging} canCreate={canCreate} canUpdate={canUpdate} onSelectRequest={id => setSelectedId(id)} selectedId={selectedId} navPlan={navPlan} candidates={candidates} collectes={collectes ?? []} layer={layer} onOpenCollecte={openCollecteFrom} />
       </div>
     </div>}
 
@@ -107,6 +131,8 @@ export function Accueil({ canCreate, canUpdate, isDark }: { canCreate: boolean; 
     </div>}
     {second === "shuttle" && openShuttle && <ShuttleCard key={openShuttle._id} shuttle={openShuttle} className={`z-10 flex min-h-[420px] flex-col lg:absolute lg:bottom-3 lg:left-[364px] lg:top-3 lg:min-h-0 lg:w-[460px] ${card}`}
       canUpdate={canUpdate} dragging={dragging} onClose={() => setOpenShuttleId(null)} onSelectRequest={id => setSelectedId(id)} selectedId={selectedId} navPlan={navPlan} candidates={candidates} />}
+    {second === "collecte" && openCollecte && <CollecteCard key={openCollecte._id} collecte={openCollecte} onClose={() => setOpenCollecteId(null)}
+      className={`z-10 flex min-h-[420px] flex-col lg:absolute lg:bottom-3 lg:left-[364px] lg:top-3 lg:min-h-0 lg:w-[380px] ${card}`} />}
     {selected && fullSheet && <RequestDetail request={selected} canUpdate={canUpdate} onClose={() => setFullSheet(false)} />}
   </div>;
 }
@@ -180,9 +206,13 @@ function periodDays(view: View, cursor: string) {
 }
 
 /** Section du bas : le calendrier des navettes, ou la navette ouverte (même emplacement). */
-function ShuttleSection({ shuttles, openId, setOpenId, dragging, canCreate, canUpdate, onSelectRequest, selectedId, navPlan, candidates }: {
+function ShuttleSection({ shuttles: allShuttles, openId, setOpenId, dragging, canCreate, canUpdate, onSelectRequest, selectedId, navPlan, candidates, collectes = [], layer = "tout", onOpenCollecte }: {
   shuttles: Shuttle[]; openId: string | null; setOpenId: (id: string | null) => void; dragging: string | null; canCreate: boolean; canUpdate: boolean; onSelectRequest: (id: string) => void; selectedId: string | null; navPlan: NavPlan | null; candidates: Request[];
+  /** Collectes Recycapp à venir, et le filtre des pastilles (Tout / Navettes / Collectes). */
+  collectes?: Collecte[]; layer?: Layer; onOpenCollecte?: (id: string) => void;
 }) {
+  const shuttles = layer === "collectes" ? [] : allShuttles;
+  const shownCollectes = layer === "navettes" ? [] : collectes;
   const addRequests = useMutation(api.meslogisticShuttles.addRequests);
   const [view, setView] = useState<View>("semaine");
   const [returnView, setReturnView] = useState<View | null>(null);
@@ -190,7 +220,7 @@ function ShuttleSection({ shuttles, openId, setOpenId, dragging, canCreate, canU
   const [creating, setCreating] = useState(false);
   const [dropTarget, setDropTarget] = useState<string | null>(null);
   const [error, setError] = useState("");
-  const open = shuttles.find(shuttle => shuttle._id === openId);
+  const open = allShuttles.find(shuttle => shuttle._id === openId);
   const todayIso = isoDay(new Date());
 
   const byDay = useMemo(() => {
@@ -200,6 +230,17 @@ function ShuttleSection({ shuttles, openId, setOpenId, dragging, canCreate, canU
     for (const list of map.values()) list.sort((a, b) => rank[a.status] - rank[b.status] || a.name.localeCompare(b.name, "fr"));
     return map;
   }, [shuttles]);
+  const collectesByDay = useMemo(() => {
+    const map = new Map<string, Collecte[]>();
+    for (const collecte of shownCollectes) { const key = isoDay(new Date(collecte.date)); map.set(key, [...(map.get(key) ?? []), collecte]); }
+    for (const list of map.values()) list.sort((a, b) => a.date - b.date);
+    return map;
+  }, [shownCollectes]);
+  const collecteChip = (collecte: Collecte, large: boolean) => <button key={collecte._id} type="button" onClick={event => { event.stopPropagation(); onOpenCollecte?.(collecte._id); }}
+    title={`Collecte · ${collecte.depotName} → ${collecte.stops[0]?.address ?? ""}`}
+    className={`flex w-full min-w-0 shrink-0 items-center gap-1.5 rounded-md bg-emerald-600 text-left font-semibold text-white hover:brightness-110 ${large ? "px-2.5 py-1.5 text-xs" : "px-1.5 py-0.5 text-[11px]"}`}>
+    <Recycle size={large ? 13 : 11} className="shrink-0" /><span className="min-w-0 flex-1 truncate">Collecte · {collecteCity(collecte)}</span>
+  </button>;
 
   async function drop(shuttle: Shuttle, event: DragEvent) {
     event.preventDefault(); event.stopPropagation(); setDropTarget(null);
@@ -240,7 +281,7 @@ function ShuttleSection({ shuttles, openId, setOpenId, dragging, canCreate, canU
     {open ? <ShuttleInline shuttle={open} canUpdate={canUpdate} dragging={dragging} dropActive={dropTarget === open._id} dropProps={dropProps(open)} onBack={() => setOpenId(null)} onSelectRequest={onSelectRequest} selectedId={selectedId} onError={setError} navPlan={navPlan} candidates={candidates} /> : <>
       <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-[var(--crm-border)] px-4 py-2.5">
         {view === "jour" && returnView && <button type="button" onClick={() => { setView(returnView); setReturnView(null); }} className="flex items-center gap-1.5 rounded-lg px-2 py-1 text-sm font-semibold text-zinc-400 hover:bg-[var(--crm-surface-2)] hover:text-zinc-100"><ArrowLeft size={16} />{returnView === "mois" ? "Mois" : "Semaine"}</button>}
-        <h2 className="mr-1 text-lg font-bold">Navettes</h2>
+        <h2 className="mr-1 text-lg font-bold">{layer === "collectes" ? "Collectes" : layer === "navettes" ? "Navettes" : "Navettes et collectes"}</h2>
         <div className="flex items-center gap-1">
           <button type="button" onClick={() => shift(-1)} aria-label="Période précédente" className="rounded-lg p-1.5 text-zinc-400 hover:bg-[var(--crm-surface-2)] hover:text-zinc-100"><ChevronLeft size={18} /></button>
           <button type="button" onClick={() => setCursor(todayIso)} className="rounded-lg border border-[var(--crm-border)] px-2.5 py-1 text-xs font-semibold text-zinc-300 hover:bg-[var(--crm-surface-2)]">Aujourd’hui</button>
@@ -255,7 +296,14 @@ function ShuttleSection({ shuttles, openId, setOpenId, dragging, canCreate, canU
       {dragging && <p className="shrink-0 bg-brand-500/10 px-4 py-1 text-xs font-semibold text-brand-500">Déposez la demande sur une navette « Nouveau » (encadrée).</p>}
 
       {view === "jour" ? <div className="min-h-0 flex-1 overflow-y-auto p-3">
-        {(byDay.get(cursor) ?? []).length === 0 ? <p className="p-3 text-sm text-zinc-500">Aucune navette prévue ce jour.</p> :
+        {(collectesByDay.get(cursor) ?? []).length > 0 && <ul className="mb-2 grid gap-2 md:grid-cols-2 2xl:grid-cols-3">{(collectesByDay.get(cursor) ?? []).map(collecte => <li key={collecte._id}>
+          <button type="button" onClick={() => onOpenCollecte?.(collecte._id)} className="w-full rounded-2xl border border-emerald-600/50 p-3 text-left text-sm transition-colors hover:bg-[var(--crm-surface-2)]">
+            <span className="flex items-center gap-2 font-bold"><Recycle size={15} className="text-emerald-500" />Collecte{collecte.stops[0]?.time ? <span className="font-semibold text-zinc-400">· {new Date(collecte.stops[0].time).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })}</span> : null}</span>
+            <span className="mt-1 block text-xs text-zinc-400">Départ : {collecte.depotName}</span>
+            <span className="block truncate text-xs font-semibold text-zinc-300">Arrivée : {collecte.stops[0]?.address ?? "—"}</span>
+          </button>
+        </li>)}</ul>}
+        {(byDay.get(cursor) ?? []).length === 0 ? ((collectesByDay.get(cursor) ?? []).length === 0 && <p className="p-3 text-sm text-zinc-500">Rien de prévu ce jour.</p>) :
           <ul className="grid gap-2 md:grid-cols-2 2xl:grid-cols-3">{(byDay.get(cursor) ?? []).map(shuttle => {
             const loaded = shuttle.transits.filter(row => row.loadedAt).length;
             const target = dropTarget === shuttle._id;
@@ -272,13 +320,16 @@ function ShuttleSection({ shuttles, openId, setOpenId, dragging, canCreate, canU
         <div className="grid min-h-0 flex-1 grid-cols-7 gap-1" style={{ gridTemplateRows: `repeat(${days.length / 7}, minmax(0, 1fr))` }}>
           {days.map(day => {
             const list = byDay.get(day) ?? [];
+            const dayCollectes = collectesByDay.get(day) ?? [];
+            const total = list.length + dayCollectes.length;
             const outside = view === "mois" && day.slice(0, 7) !== cursor.slice(0, 7);
             const max = view === "semaine" ? 8 : 2;
             return <div key={day} role="button" tabIndex={0} onClick={() => openDay(day)} onKeyDown={event => { if (event.key === "Enter") openDay(day); }} title="Voir les navettes du jour"
               className={`flex min-h-0 cursor-pointer flex-col gap-0.5 overflow-hidden rounded-lg border p-1 transition-colors hover:bg-[var(--crm-surface-2)] ${day === todayIso ? "border-brand-500" : "border-[var(--crm-border)]"} ${outside ? "opacity-40" : ""}`}>
               {view === "mois" && <span className={`shrink-0 self-end px-1.5 text-[11px] font-semibold tabular-nums ${day === todayIso ? "rounded-full bg-brand-500 text-white" : "text-zinc-400"}`}>{parseDay(day).getDate()}</span>}
               {list.slice(0, max).map(shuttle => chip(shuttle, view === "semaine"))}
-              {list.length > max && <span className="shrink-0 px-1 text-[10px] font-semibold text-zinc-400">+{list.length - max} autre{list.length - max > 1 ? "s" : ""}</span>}
+              {dayCollectes.slice(0, Math.max(0, max - list.length)).map(collecte => collecteChip(collecte, view === "semaine"))}
+              {total > max && <span className="shrink-0 px-1 text-[10px] font-semibold text-zinc-400">+{total - max} autre{total - max > 1 ? "s" : ""}</span>}
             </div>;
           })}
         </div>
