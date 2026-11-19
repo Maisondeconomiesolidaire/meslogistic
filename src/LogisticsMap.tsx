@@ -83,9 +83,15 @@ function shuttleLocator(shuttle: Shuttle) {
 const isoToday = () => { const now = new Date(); return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`; };
 
 /** Navettes affichées par défaut : en route, ou planifiées aujourd'hui ou plus tard. */
+/**
+ * Navettes affichées sur la carte : ni terminées, ni passées. Une navette
+ * d'un jour passé disparaît même restée « en route » (arrivée jamais
+ * déclarée), et le trajet d'un salarié dès la fin de sa réservation.
+ */
 export function currentShuttles(shuttles: Shuttle[]) {
   const today = isoToday();
-  return shuttles.filter(shuttle => shuttle.status === "en_route" || (shuttle.status === "planifiee" && shuttle.scheduledDate >= today));
+  const now = Date.now();
+  return shuttles.filter(shuttle => shuttle.status !== "terminee" && shuttle.scheduledDate >= today && !(shuttle.trip && shuttle.trip.end < now));
 }
 
 /**
